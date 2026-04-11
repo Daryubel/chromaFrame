@@ -181,10 +181,22 @@ def create_framed_image(input_path: Path, output_path: Path, cfg: LayoutConfig) 
     def exif_num(tag: str) -> float:
         return _to_float_fraction(exif.get(tag))
 
+    print("\nAvailable EXIF tags:")
+    for tag, value in exif.items():
+        print(f"  {tag}: {value}")
+
     focal_length = exif_num("FocalLength")
     f_number = exif_num("FNumber")
     exposure = exif.get("ExposureTime")
     iso = exif.get("ISOSpeedRatings") or exif.get("PhotographicSensitivity")
+
+    print(f"Camera: {camera}")
+    print(f"Date: {date_value}")
+    print(f"GPS: {gps_line}")
+    print(f"Focal Length: {focal_length}mm")
+    print(f"F-Number: f/{f_number}")
+    print(f"Exposure Time: {exposure}")
+    print(f"ISO: {iso}")
 
     exposure_text = ""
     if isinstance(exposure, tuple) and len(exposure) == 2 and exposure[1] != 0:
