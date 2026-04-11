@@ -209,26 +209,6 @@ def get_exif_data(image: Image.Image) -> dict[str, Any]:
         except Exception:
             pass
 
-    # 4) Optional exifread pass (can surface tags hidden from Pillow)
-    image_path = image.filename
-    if exifread and image_path:
-        try:
-            with open(image_path, "rb") as fh:
-                exifread_tags = exifread.process_file(fh, details=False)
-            for raw_key, raw_value in exifread_tags.items():
-                key = str(raw_key)
-                value = _decode_if_bytes(str(raw_value))
-                if key.startswith("EXIF "):
-                    parsed.setdefault(key.replace("EXIF ", "", 1), value)
-                elif key.startswith("Image "):
-                    parsed.setdefault(key.replace("Image ", "", 1), value)
-                elif key.startswith("GPS "):
-                    gps = dict(parsed.get("GPSInfo", {}))
-                    gps.setdefault(key.replace("GPS ", "", 1), value)
-                    parsed["GPSInfo"] = gps
-        except Exception:
-            pass
-
     return parsed
 
 
@@ -335,11 +315,11 @@ def create_framed_image(input_path: Path, output_path: Path, cfg: LayoutConfig) 
         draw.text((pad_x, subtitle_y), subtitle, fill=(120, 120, 120), font=subtitle_font)
 
     bottom_inner_top = cfg.top_margin + height + max(12, cfg.bottom_margin // 10)
-    swatch_height = max(24, cfg.bottom_margin // 6)
-    swatch_width = min(width // 2, 520)
+    swatch_height = max(24, cfg.bottom_margin // 2)
+    swatch_width = min(width // 2, 1000)
 
-    colors = dominant_colors(source, n_colors=cfg.swatch_count)
-    draw_color_swatches(draw, colors, pad_x, bottom_inner_top, swatch_width, swatch_height, swatch_font)
+    colors = dominant_colors(source, n_colors=5)
+    draw_color_swatches(draw, colors, pad_x, bottom_inner_top, swatch_width, swatch_height)
 
     right_x = canvas_w - cfg.side_margin
     camera_bbox = draw.textbbox((0, 0), camera, font=info_font)
