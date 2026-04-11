@@ -294,8 +294,8 @@ def create_framed_image(input_path: Path, output_path: Path, cfg: LayoutConfig) 
         draw.text((pad_x, subtitle_y), subtitle, fill=(120, 120, 120), font=subtitle_font)
 
     bottom_inner_top = cfg.top_margin + height + max(12, cfg.bottom_margin // 10)
-    swatch_height = max(24, cfg.bottom_margin // 6)
-    swatch_width = min(width // 2, 520)
+    swatch_height = max(24, cfg.bottom_margin // 2)
+    swatch_width = min(width // 2, 1000)
 
     colors = dominant_colors(source, n_colors=5)
     draw_color_swatches(draw, colors, pad_x, bottom_inner_top, swatch_width, swatch_height)
