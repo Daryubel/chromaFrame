@@ -43,9 +43,9 @@ foreach ($file in $files) {
         $relativeDir = [System.IO.Path]::GetDirectoryName($relativePath)
         $targetDir = if ([string]::IsNullOrEmpty($relativeDir)) { $OutputDirectory } else { Join-Path $OutputDirectory $relativeDir }
         New-Item -ItemType Directory -Path $targetDir -Force | Out-Null
-        $outputPath = Join-Path $targetDir ("{0}_framed.jpg" -f $file.BaseName)
+        $outputPath = Join-Path $targetDir ("Framed_{0}.jpg" -f $file.BaseName)
     } else {
-        $outputPath = Join-Path $OutputDirectory ("{0}_framed.jpg" -f $file.BaseName)
+        $outputPath = Join-Path $OutputDirectory ("Framed_{0}.jpg" -f $file.BaseName)
     }
 
     Write-Host "Processing $($file.FullName) -> $outputPath"
