@@ -319,7 +319,7 @@ def create_framed_image(input_path: Path, output_path: Path, cfg: LayoutConfig) 
     swatch_width = min(width // 2, 1000)
 
     colors = dominant_colors(source, n_colors=5)
-    draw_color_swatches(draw, colors, pad_x, bottom_inner_top, swatch_width, swatch_height)
+    draw_color_swatches(draw, colors, pad_x, bottom_inner_top, swatch_width, swatch_height, label_font=swatch_font)
 
     right_x = canvas_w - cfg.side_margin
     camera_bbox = draw.textbbox((0, 0), camera, font=info_font)
