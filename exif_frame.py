@@ -307,32 +307,54 @@ def create_framed_image(input_path: Path, output_path: Path, cfg: LayoutConfig) 
     specs = "    ".join(spec_chunks)
 
     pad_x = cfg.side_margin
-    top_y = max(18, int(cfg.top_margin * 0.2))
+    title_bbox = draw.textbbox((0, 0), cfg.title, font=title_font)
+    title_h = title_bbox[3] - title_bbox[1]
+    subtitle_h = 0
+    subtitle_gap = 8 if subtitle else 0
+    if subtitle:
+        subtitle_bbox = draw.textbbox((0, 0), subtitle, font=subtitle_font)
+        subtitle_h = subtitle_bbox[3] - subtitle_bbox[1]
+    top_block_h = title_h + subtitle_gap + subtitle_h
+    top_margin_y = int((cfg.top_margin - top_block_h) / 2)
+    top_y = max(0, top_margin_y)
     draw.text((pad_x, top_y), cfg.title, fill=(20, 20, 20), font=title_font)
 
     if subtitle:
-        subtitle_y = top_y + cfg.title_size + 8
+        subtitle_y = top_y + title_h + subtitle_gap
         draw.text((pad_x, subtitle_y), subtitle, fill=(120, 120, 120), font=subtitle_font)
 
-    bottom_inner_top = cfg.top_margin + height + max(12, cfg.bottom_margin // 10)
-    swatch_height = max(24, cfg.bottom_margin // 2)
-    swatch_width = min(width // 2, 2000)
+    bottom_margin_start = cfg.top_margin + height
+    swatch_height = max(24, cfg.bottom_margin // 6)
+    swatch_width = min(width // 2, 520)
+    swatch_label_bbox = draw.textbbox((0, 0), "#FFFFFF", font=swatch_font)
+    swatch_label_h = swatch_label_bbox[3] - swatch_label_bbox[1]
+    swatch_block_h = swatch_height + 6 + swatch_label_h
 
-    colors = dominant_colors(source, n_colors=5)
-    draw_color_swatches(draw, colors, pad_x, bottom_inner_top, swatch_width, swatch_height, label_font=swatch_font)
+    colors = dominant_colors(source, n_colors=cfg.swatch_count)
+    bottom_swatch_y = bottom_margin_start + max(0, int((cfg.bottom_margin - swatch_block_h) / 2))
+    draw_color_swatches(draw, colors, pad_x, bottom_swatch_y, swatch_width, swatch_height, swatch_font)
 
     right_x = canvas_w - cfg.side_margin
+    specs_bbox = draw.textbbox((0, 0), specs, font=meta_font)
+    specs_h = specs_bbox[3] - specs_bbox[1]
     camera_bbox = draw.textbbox((0, 0), camera, font=info_font)
     camera_w = camera_bbox[2] - camera_bbox[0]
-    draw.text((right_x - camera_w, bottom_inner_top), camera, fill=(20, 20, 20), font=info_font)
+    camera_h = camera_bbox[3] - camera_bbox[1]
+    line_gap = 12
+    text_block_h = camera_h + line_gap + specs_h
+    if gps_line:
+        gps_bbox = draw.textbbox((0, 0), gps_line, font=meta_font)
+        gps_h = gps_bbox[3] - gps_bbox[1]
+        text_block_h += 8 + gps_h
+    text_start_y = bottom_margin_start + max(0, int((cfg.bottom_margin - text_block_h) / 2))
+    draw.text((right_x - camera_w, text_start_y), camera, fill=(20, 20, 20), font=info_font)
 
-    specs_y = bottom_inner_top + cfg.info_size + 12
-    specs_bbox = draw.textbbox((0, 0), specs, font=meta_font)
+    specs_y = text_start_y + camera_h + line_gap
     specs_w = specs_bbox[2] - specs_bbox[0]
     draw.text((right_x - specs_w, specs_y), specs, fill=(120, 120, 120), font=meta_font)
 
     if gps_line:
-        gps_y = specs_y + cfg.meta_size + 8
+        gps_y = specs_y + specs_h + 8
         gps_bbox = draw.textbbox((0, 0), gps_line, font=meta_font)
         gps_w = gps_bbox[2] - gps_bbox[0]
         draw.text((right_x - gps_w, gps_y), gps_line, fill=(120, 120, 120), font=meta_font)
@@ -348,9 +370,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--title", default="Nature's poetry", help="Display title on top")
     parser.add_argument("--subtitle", default=None, help="Override subtitle text under title")
     parser.add_argument("--frame-color", type=parse_hex_color, default="F2F2F2", help="Frame color hex (RRGGBB)")
-    parser.add_argument("--top-margin", type=int, default=200, help="Top frame margin in pixels")
+    parser.add_argument("--top-margin", type=int, default=170, help="Top frame margin in pixels")
     parser.add_argument("--bottom-margin", type=int, default=190, help="Bottom frame margin in pixels")
-    parser.add_argument("--side-margin", type=int, default=70, help="Left/right frame margin in pixels")
+    parser.add_argument("--side-margin", type=int, default=40, help="Left/right frame margin in pixels")
     parser.add_argument("--title-size", type=int, default=62, help="Title font size")
     parser.add_argument("--subtitle-size", type=int, default=42, help="Subtitle font size")
     parser.add_argument("--info-size", type=int, default=64, help="Camera model font size")
