@@ -324,8 +324,8 @@ def create_framed_image(input_path: Path, output_path: Path, cfg: LayoutConfig) 
         draw.text((pad_x, subtitle_y), subtitle, fill=(120, 120, 120), font=subtitle_font)
 
     bottom_margin_start = cfg.top_margin + height
-    swatch_height = max(24, cfg.bottom_margin // 6)
-    swatch_width = min(width // 2, 520)
+    swatch_height = max(70, cfg.bottom_margin // 6)
+    swatch_width = min(width // 2, 2000)
     swatch_label_bbox = draw.textbbox((0, 0), "#FFFFFF", font=swatch_font)
     swatch_label_h = swatch_label_bbox[3] - swatch_label_bbox[1]
     swatch_block_h = swatch_height + 6 + swatch_label_h
