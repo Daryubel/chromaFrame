@@ -316,7 +316,7 @@ def create_framed_image(input_path: Path, output_path: Path, cfg: LayoutConfig) 
 
     bottom_inner_top = cfg.top_margin + height + max(12, cfg.bottom_margin // 10)
     swatch_height = max(24, cfg.bottom_margin // 2)
-    swatch_width = min(width // 2, 1000)
+    swatch_width = min(width // 2, 2000)
 
     colors = dominant_colors(source, n_colors=5)
     draw_color_swatches(draw, colors, pad_x, bottom_inner_top, swatch_width, swatch_height, label_font=swatch_font)
@@ -349,7 +349,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--subtitle", default=None, help="Override subtitle text under title")
     parser.add_argument("--frame-color", type=parse_hex_color, default="F2F2F2", help="Frame color hex (RRGGBB)")
     parser.add_argument("--top-margin", type=int, default=200, help="Top frame margin in pixels")
-    parser.add_argument("--bottom-margin", type=int, default=200, help="Bottom frame margin in pixels")
+    parser.add_argument("--bottom-margin", type=int, default=190, help="Bottom frame margin in pixels")
     parser.add_argument("--side-margin", type=int, default=70, help="Left/right frame margin in pixels")
     parser.add_argument("--title-size", type=int, default=62, help="Title font size")
     parser.add_argument("--subtitle-size", type=int, default=42, help="Subtitle font size")
