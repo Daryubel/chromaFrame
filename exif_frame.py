@@ -7,13 +7,19 @@ import argparse
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Iterable
+from typing import Any, Iterable
 
 from PIL import ExifTags, Image, ImageDraw, ImageFont, ImageOps
 
+try:
+    import piexif
+except ImportError:  # optional enhancement for more complete EXIF extraction
+    piexif = None
 
-EXIF_TAGS = {v: k for k, v in ExifTags.TAGS.items()}
-GPS_TAGS = {v: k for k, v in ExifTags.GPSTAGS.items()}
+try:
+    import exifread
+except ImportError:  # optional enhancement for additional camera-specific tags
+    exifread = None
 
 
 @dataclass
@@ -29,6 +35,7 @@ class LayoutConfig:
     info_size: int
     meta_size: int
     font_path: str | None
+    dump_exif: bool
 
 
 def parse_hex_color(value: str) -> tuple[int, int, int]:
@@ -57,9 +64,23 @@ def load_font(font_path: str | None, size: int) -> ImageFont.FreeTypeFont | Imag
     return ImageFont.load_default()
 
 
+def _decode_if_bytes(value: Any) -> Any:
+    if isinstance(value, bytes):
+        try:
+            return value.decode("utf-8", errors="ignore").strip("\x00 ")
+        except Exception:
+            return value
+    return value
+
+
 def _to_float_fraction(value) -> float:
     if value is None:
         return 0.0
+    value = _decode_if_bytes(value)
+    if hasattr(value, "numerator") and hasattr(value, "denominator"):
+        denominator = float(getattr(value, "denominator", 0) or 0)
+        if denominator != 0:
+            return float(getattr(value, "numerator", 0)) / denominator
     if isinstance(value, tuple) and len(value) == 2 and value[1] != 0:
         return float(value[0]) / float(value[1])
     try:
@@ -107,18 +128,105 @@ def _format_gps_coord(values: Iterable, ref: str | None, kind: str) -> str | Non
     return f"{abs(coord):.6f}°{suffix or default_suffix}"
 
 
-def get_exif_data(image: Image.Image) -> dict:
+def _first_present(exif: dict[str, Any], *keys: str) -> Any:
+    for key in keys:
+        if key in exif and exif[key] not in (None, ""):
+            return exif[key]
+    return None
+
+
+def _format_exposure(value: Any) -> str:
+    value = _decode_if_bytes(value)
+    if value is None:
+        return "--"
+    if hasattr(value, "numerator") and hasattr(value, "denominator"):
+        num = int(getattr(value, "numerator", 0))
+        den = int(getattr(value, "denominator", 0))
+        if den:
+            return f"{num}/{den}" if num < den else f"{num/den:.2f}s"
+    if isinstance(value, tuple) and len(value) == 2 and value[1]:
+        num, den = value
+        try:
+            num_i, den_i = int(num), int(den)
+            return f"{num_i}/{den_i}" if num_i < den_i else f"{num_i/den_i:.2f}s"
+        except Exception:
+            return str(value)
+    return str(value)
+
+
+def _normalize_exif_map(exif_map: dict[Any, Any], tag_lookup: dict[int, str]) -> dict[str, Any]:
+    normalized: dict[str, Any] = {}
+    for tag_id, raw_value in exif_map.items():
+        tag_name = tag_lookup.get(int(tag_id), str(tag_id)) if isinstance(tag_id, int) else str(tag_id)
+        value = _decode_if_bytes(raw_value)
+        normalized[tag_name] = value
+    return normalized
+
+
+def get_exif_data(image: Image.Image) -> dict[str, Any]:
+    """Read EXIF robustly (Pillow IFD parsing + optional piexif fallback)."""
     raw_exif = image.getexif()
     if not raw_exif:
         return {}
 
-    parsed = {}
-    for tag_id, value in raw_exif.items():
-        tag_name = ExifTags.TAGS.get(tag_id, tag_id)
-        if tag_name == "GPSInfo" and isinstance(value, dict):
-            parsed[tag_name] = {ExifTags.GPSTAGS.get(k, k): v for k, v in value.items()}
-        else:
-            parsed[tag_name] = value
+    parsed: dict[str, Any] = {}
+
+    # 1) Base IFD (0th) tags
+    parsed.update(_normalize_exif_map(dict(raw_exif.items()), ExifTags.TAGS))
+
+    # 2) Explicitly expand EXIF + GPS IFDs from pointers (captures FNumber, ISO, etc.)
+    try:
+        ifd_exif = raw_exif.get_ifd(ExifTags.IFD.Exif)
+        if ifd_exif:
+            parsed.update(_normalize_exif_map(dict(ifd_exif.items()), ExifTags.TAGS))
+
+        ifd_gps = raw_exif.get_ifd(ExifTags.IFD.GPSInfo)
+        if ifd_gps:
+            parsed["GPSInfo"] = _normalize_exif_map(dict(ifd_gps.items()), ExifTags.GPSTAGS)
+    except Exception:
+        pass
+
+    # 3) Optional piexif pass for files where Pillow misses fields
+    if piexif and image.info.get("exif"):
+        try:
+            px = piexif.load(image.info["exif"])
+            for ifd_name in ("0th", "Exif"):
+                ifd_dict = px.get(ifd_name, {})
+                for tag_id, value in ifd_dict.items():
+                    tag_lookup = piexif.TAGS[ifd_name].get(tag_id, {})
+                    tag_name = tag_lookup.get("name", str(tag_id))
+                    parsed.setdefault(tag_name, _decode_if_bytes(value))
+
+            gps_dict = px.get("GPS", {})
+            if gps_dict:
+                gps_named: dict[str, Any] = dict(parsed.get("GPSInfo", {}))
+                for tag_id, value in gps_dict.items():
+                    gps_name = next((k for k, v in piexif.GPSIFD.__dict__.items() if v == tag_id), str(tag_id))
+                    gps_named.setdefault(gps_name, _decode_if_bytes(value))
+                parsed["GPSInfo"] = gps_named
+        except Exception:
+            pass
+
+    # 4) Optional exifread pass (can surface tags hidden from Pillow)
+    image_path = image.filename
+    if exifread and image_path:
+        try:
+            with open(image_path, "rb") as fh:
+                exifread_tags = exifread.process_file(fh, details=False)
+            for raw_key, raw_value in exifread_tags.items():
+                key = str(raw_key)
+                value = _decode_if_bytes(str(raw_value))
+                if key.startswith("EXIF "):
+                    parsed.setdefault(key.replace("EXIF ", "", 1), value)
+                elif key.startswith("Image "):
+                    parsed.setdefault(key.replace("Image ", "", 1), value)
+                elif key.startswith("GPS "):
+                    gps = dict(parsed.get("GPSInfo", {}))
+                    gps.setdefault(key.replace("GPS ", "", 1), value)
+                    parsed["GPSInfo"] = gps
+        except Exception:
+            pass
+
     return parsed
 
 
@@ -166,11 +274,14 @@ def create_framed_image(input_path: Path, output_path: Path, cfg: LayoutConfig) 
     meta_font = load_font(cfg.font_path, cfg.meta_size)
 
     exif = get_exif_data(source)
-    make = str(exif.get("Make", "")).strip()
-    model = str(exif.get("Model", "")).strip()
+    if cfg.dump_exif:
+        for key in sorted(exif):
+            print(f"{key}: {exif[key]}")
+    make = str(_decode_if_bytes(_first_present(exif, "Make") or "")).strip()
+    model = str(_decode_if_bytes(_first_present(exif, "Model", "LensModel") or "")).strip()
     camera = f"{make} {model}".strip() or "Unknown Camera"
 
-    date_value = _format_date(exif.get("DateTimeOriginal") or exif.get("DateTime"))
+    date_value = _format_date(_first_present(exif, "DateTimeOriginal", "CreateDate", "DateTime"))
     subtitle = cfg.subtitle if cfg.subtitle else (f"PHOTOGRAPHED IN : {date_value}" if date_value else "")
 
     gps = exif.get("GPSInfo", {}) if isinstance(exif.get("GPSInfo"), dict) else {}
@@ -181,33 +292,15 @@ def create_framed_image(input_path: Path, output_path: Path, cfg: LayoutConfig) 
     def exif_num(tag: str) -> float:
         return _to_float_fraction(exif.get(tag))
 
-    print("\nAvailable EXIF tags:")
-    for tag, value in exif.items():
-        print(f"  {tag}: {value}")
-
-    focal_length = exif_num("FocalLength")
-    f_number = exif_num("FNumber")
-    exposure = exif.get("ExposureTime")
-    iso = exif.get("ISOSpeedRatings") or exif.get("PhotographicSensitivity")
-
-    print(f"Camera: {camera}")
-    print(f"Date: {date_value}")
-    print(f"GPS: {gps_line}")
-    print(f"Focal Length: {focal_length}mm")
-    print(f"F-Number: f/{f_number}")
-    print(f"Exposure Time: {exposure}")
-    print(f"ISO: {iso}")
-
-    exposure_text = ""
-    if isinstance(exposure, tuple) and len(exposure) == 2 and exposure[1] != 0:
-        exposure_text = f"{exposure[0]}/{exposure[1]}"
-    elif exposure:
-        exposure_text = str(exposure)
+    focal_length = _to_float_fraction(_first_present(exif, "FocalLength", "FocalLengthIn35mmFilm"))
+    f_number = _to_float_fraction(_first_present(exif, "FNumber", "ApertureValue"))
+    exposure = _first_present(exif, "ExposureTime", "ShutterSpeedValue")
+    iso = _decode_if_bytes(_first_present(exif, "ISOSpeedRatings", "PhotographicSensitivity", "ISO"))
 
     spec_chunks = [
         f"{focal_length:.0f}mm" if focal_length else "--mm",
         f"f/{f_number:.1f}" if f_number else "f/--",
-        exposure_text or "--",
+        _format_exposure(exposure),
         f"ISO{iso}" if iso else "ISO--",
     ]
     specs = "    ".join(spec_chunks)
@@ -251,17 +344,18 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Build a framed JPG with EXIF summary and dominant colors")
     parser.add_argument("input", type=Path, help="Input JPEG file")
     parser.add_argument("output", type=Path, help="Output image path")
-    parser.add_argument("--title", default="Chang-Sha", help="Display title on top")
-    parser.add_argument("--subtitle", default="A test subtitle", help="Override subtitle text under title")
+    parser.add_argument("--title", default="Nature's poetry", help="Display title on top")
+    parser.add_argument("--subtitle", default=None, help="Override subtitle text under title")
     parser.add_argument("--frame-color", type=parse_hex_color, default="F2F2F2", help="Frame color hex (RRGGBB)")
-    parser.add_argument("--top-margin", type=int, default=300, help="Top frame margin in pixels")
-    parser.add_argument("--bottom-margin", type=int, default=300, help="Bottom frame margin in pixels")
-    parser.add_argument("--side-margin", type=int, default=100, help="Left/right frame margin in pixels")
-    parser.add_argument("--title-size", type=int, default=100, help="Title font size")
+    parser.add_argument("--top-margin", type=int, default=170, help="Top frame margin in pixels")
+    parser.add_argument("--bottom-margin", type=int, default=190, help="Bottom frame margin in pixels")
+    parser.add_argument("--side-margin", type=int, default=40, help="Left/right frame margin in pixels")
+    parser.add_argument("--title-size", type=int, default=62, help="Title font size")
     parser.add_argument("--subtitle-size", type=int, default=42, help="Subtitle font size")
-    parser.add_argument("--info-size", type=int, default=80, help="Camera model font size")
-    parser.add_argument("--meta-size", type=int, default=50, help="Metadata font size")
+    parser.add_argument("--info-size", type=int, default=64, help="Camera model font size")
+    parser.add_argument("--meta-size", type=int, default=38, help="Metadata font size")
     parser.add_argument("--font", dest="font_path", default=None, help="Path to TTF/OTF font")
+    parser.add_argument("--dump-exif", action="store_true", help="Print extracted EXIF tags before rendering")
 
     args = parser.parse_args()
     if args.top_margin < 0 or args.bottom_margin < 0 or args.side_margin < 0:
@@ -286,6 +380,7 @@ def main() -> None:
         info_size=args.info_size,
         meta_size=args.meta_size,
         font_path=args.font_path,
+        dump_exif=args.dump_exif,
     )
     create_framed_image(args.input, args.output, cfg)
     print(f"Saved framed image to: {args.output}")
