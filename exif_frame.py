@@ -36,6 +36,8 @@ class LayoutConfig:
     meta_size: int
     font_path: str | None
     dump_exif: bool
+    swatch_count: int
+    swatch_label_size: int
 
 
 def parse_hex_color(value: str) -> tuple[int, int, int]:
@@ -228,12 +230,30 @@ def dominant_colors(image: Image.Image, n_colors: int = 5) -> list[tuple[int, in
     return colors
 
 
-def draw_color_swatches(draw: ImageDraw.ImageDraw, colors: list[tuple[int, int, int]], x: int, y: int, width: int, height: int) -> None:
+def _hex_color(color: tuple[int, int, int]) -> str:
+    return "#{:02X}{:02X}{:02X}".format(*color)
+
+
+def draw_color_swatches(
+    draw: ImageDraw.ImageDraw,
+    colors: list[tuple[int, int, int]],
+    x: int,
+    y: int,
+    width: int,
+    height: int,
+    label_font: ImageFont.FreeTypeFont | ImageFont.ImageFont,
+) -> None:
     swatch_w = width / len(colors)
     for idx, color in enumerate(colors):
         x0 = int(x + idx * swatch_w)
         x1 = int(x + (idx + 1) * swatch_w)
         draw.rectangle((x0, y, x1, y + height), fill=color)
+        label = _hex_color(color)
+        label_bbox = draw.textbbox((0, 0), label, font=label_font)
+        label_w = label_bbox[2] - label_bbox[0]
+        label_x = x0 + max(0, int((x1 - x0 - label_w) / 2))
+        label_y = y + height + 6
+        draw.text((label_x, label_y), label, fill=(90, 90, 90), font=label_font)
 
 
 def create_framed_image(input_path: Path, output_path: Path, cfg: LayoutConfig) -> None:
@@ -252,6 +272,7 @@ def create_framed_image(input_path: Path, output_path: Path, cfg: LayoutConfig) 
     subtitle_font = load_font(cfg.font_path, cfg.subtitle_size)
     info_font = load_font(cfg.font_path, cfg.info_size)
     meta_font = load_font(cfg.font_path, cfg.meta_size)
+    swatch_font = load_font(cfg.font_path, cfg.swatch_label_size)
 
     exif = get_exif_data(source)
     if cfg.dump_exif:
@@ -334,12 +355,18 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--subtitle-size", type=int, default=42, help="Subtitle font size")
     parser.add_argument("--info-size", type=int, default=64, help="Camera model font size")
     parser.add_argument("--meta-size", type=int, default=38, help="Metadata font size")
+    parser.add_argument("--swatch-count", type=int, default=5, help="Number of dominant color swatches")
+    parser.add_argument("--swatch-label-size", type=int, default=20, help="Color hex label font size")
     parser.add_argument("--font", dest="font_path", default=None, help="Path to TTF/OTF font")
     parser.add_argument("--dump-exif", action="store_true", help="Print extracted EXIF tags before rendering")
 
     args = parser.parse_args()
     if args.top_margin < 0 or args.bottom_margin < 0 or args.side_margin < 0:
         parser.error("Margins must be non-negative")
+    if args.swatch_count < 1:
+        parser.error("--swatch-count must be at least 1")
+    if args.swatch_label_size < 1:
+        parser.error("--swatch-label-size must be at least 1")
     return args
 
 
@@ -361,6 +388,8 @@ def main() -> None:
         meta_size=args.meta_size,
         font_path=args.font_path,
         dump_exif=args.dump_exif,
+        swatch_count=args.swatch_count,
+        swatch_label_size=args.swatch_label_size,
     )
     create_framed_image(args.input, args.output, cfg)
     print(f"Saved framed image to: {args.output}")
