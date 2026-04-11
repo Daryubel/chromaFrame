@@ -209,26 +209,6 @@ def get_exif_data(image: Image.Image) -> dict[str, Any]:
         except Exception:
             pass
 
-    # 4) Optional exifread pass (can surface tags hidden from Pillow)
-    image_path = image.filename
-    if exifread and image_path:
-        try:
-            with open(image_path, "rb") as fh:
-                exifread_tags = exifread.process_file(fh, details=False)
-            for raw_key, raw_value in exifread_tags.items():
-                key = str(raw_key)
-                value = _decode_if_bytes(str(raw_value))
-                if key.startswith("EXIF "):
-                    parsed.setdefault(key.replace("EXIF ", "", 1), value)
-                elif key.startswith("Image "):
-                    parsed.setdefault(key.replace("Image ", "", 1), value)
-                elif key.startswith("GPS "):
-                    gps = dict(parsed.get("GPSInfo", {}))
-                    gps.setdefault(key.replace("GPS ", "", 1), value)
-                    parsed["GPSInfo"] = gps
-        except Exception:
-            pass
-
     return parsed
 
 
