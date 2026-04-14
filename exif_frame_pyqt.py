@@ -83,7 +83,7 @@ class WorkerSignals(QObject):
 
 
 class RenderWorker(QRunnable):
-    def __init__(self, key: str, input_path: Path, cfg: LayoutConfig, title_gap: int, camera_gap: int, swatch_height: int):
+    def __init__(self, key: str, input_path: Path, cfg: LayoutConfig, title_gap: int, camera_gap: int, swatch_height: int, swatch_width: int):
         super().__init__()
         self.key = key
         self.input_path = input_path
@@ -91,19 +91,28 @@ class RenderWorker(QRunnable):
         self.title_gap = title_gap
         self.camera_gap = camera_gap
         self.swatch_height = swatch_height
+        self.swatch_width = swatch_width
         self.signals = WorkerSignals()
 
     def run(self) -> None:
         try:
             with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as tmp:
                 out_path = Path(tmp.name)
-            render_with_options(self.input_path, out_path, self.cfg, self.title_gap, self.camera_gap, self.swatch_height)
+            render_with_options(self.input_path, out_path, self.cfg, self.title_gap, self.camera_gap, self.swatch_height, self.swatch_width)
             self.signals.done.emit(self.key, str(out_path))
         except Exception as exc:
             self.signals.error.emit(str(exc))
 
 
-def render_with_options(input_path: Path, output_path: Path, cfg: LayoutConfig, title_gap: int, camera_gap: int, swatch_height: int) -> None:
+def render_with_options(
+    input_path: Path,
+    output_path: Path,
+    cfg: LayoutConfig,
+    title_gap: int,
+    camera_gap: int,
+    swatch_height: int,
+    swatch_width: int,
+) -> None:
     from PIL import Image
 
     source = Image.open(input_path)
@@ -162,7 +171,7 @@ def render_with_options(input_path: Path, output_path: Path, cfg: LayoutConfig, 
         draw.text((pad_x, top_y + title_h + title_gap), subtitle, fill=(120, 120, 120), font=subtitle_font)
 
     bottom_margin_start = cfg.top_margin + height
-    swatch_w = min(width // 2, 520)
+    swatch_w = max(80, min(width, swatch_width))
     swatch_h = max(8, swatch_height)
     swatch_label_bbox = draw.textbbox((0, 0), "#FFFFFF", font=swatch_font)
     swatch_label_h = swatch_label_bbox[3] - swatch_label_bbox[1]
@@ -293,6 +302,7 @@ class ExifFrameQt(QMainWindow):
         title_gap_row, self.title_subtitle_gap = self._slider_spin(0, 200, 8)
         camera_gap_row, self.camera_meta_gap = self._slider_spin(0, 200, 12)
         swatch_box_row, self.swatch_box_height = self._slider_spin(8, 300, 40)
+        swatch_width_row, self.swatch_box_width = self._slider_spin(80, 5000, 520)
         self.font_path = QLineEdit("")
         self.export_template = QLineEdit("${filename}_framed")
         self.dump_exif = QCheckBox("Dump EXIF")
@@ -315,6 +325,7 @@ class ExifFrameQt(QMainWindow):
         form.addRow("Title-Subtitle gap", title_gap_row)
         form.addRow("Camera-Meta gap", camera_gap_row)
         form.addRow("Swatch box height", swatch_box_row)
+        form.addRow("Swatch box width", swatch_width_row)
         form.addRow("Font path", self.font_path)
         form.addRow("Export template", self.export_template)
         form.addRow("", help_btn)
@@ -324,7 +335,7 @@ class ExifFrameQt(QMainWindow):
 
         self.export_progress = QProgressBar()
         self.export_progress.setRange(0, 100)
-        right_layout.addWidget(QLabel("Export progress"))
+        right_layout.addWidget(QLabel("Progress"))
         right_layout.addWidget(self.export_progress)
 
         right_layout.addWidget(QLabel("Current image EXIF"))
@@ -352,6 +363,7 @@ class ExifFrameQt(QMainWindow):
             self.title_subtitle_gap,
             self.camera_meta_gap,
             self.swatch_box_height,
+            self.swatch_box_width,
             self.font_path,
             self.dump_exif,
         ]:
@@ -413,7 +425,15 @@ class ExifFrameQt(QMainWindow):
         folder = QFileDialog.getExistingDirectory(self, "Open folder")
         if not folder:
             return
-        files = sorted(p for p in Path(folder).iterdir() if p.is_file() and p.suffix.lower() in {".jpg", ".jpeg"})
+        all_items = [p for p in Path(folder).iterdir() if p.is_file()]
+        total_items = max(1, len(all_items))
+        files: list[Path] = []
+        for idx, p in enumerate(all_items, start=1):
+            if p.suffix.lower() in {".jpg", ".jpeg"}:
+                files.append(p)
+            self.export_progress.setValue(int((idx / total_items) * 100))
+            QApplication.processEvents()
+        files = sorted(files)
         if not files:
             QMessageBox.warning(self, "No images", "No JPG/JPEG files found.")
             return
@@ -527,6 +547,7 @@ class ExifFrameQt(QMainWindow):
             return
 
         self.preview.setText("Rendering preview...")
+        self.export_progress.setValue(10)
         worker = RenderWorker(
             key,
             src,
@@ -534,9 +555,10 @@ class ExifFrameQt(QMainWindow):
             self.title_subtitle_gap.value(),
             self.camera_meta_gap.value(),
             self.swatch_box_height.value(),
+            self.swatch_box_width.value(),
         )
         worker.signals.done.connect(self._preview_done)
-        worker.signals.error.connect(lambda msg: self.preview.setText(f"Preview error: {msg}"))
+        worker.signals.error.connect(lambda msg: (self.preview.setText(f"Preview error: {msg}"), self.export_progress.setValue(0)))
         self.pool.start(worker)
 
     def _preview_done(self, key: str, path: str) -> None:
@@ -547,6 +569,7 @@ class ExifFrameQt(QMainWindow):
         Path(path).unlink(missing_ok=True)
         self.preview_cache[key] = pix
         self._set_preview_pixmap(pix)
+        self.export_progress.setValue(100)
 
     def _set_preview_pixmap(self, pix: QPixmap) -> None:
         w = max(300, self.preview_scroll.viewport().width() - 20)
@@ -565,6 +588,7 @@ class ExifFrameQt(QMainWindow):
             "title_gap": self.title_subtitle_gap.value(),
             "camera_gap": self.camera_meta_gap.value(),
             "swatch_box_height": self.swatch_box_height.value(),
+            "swatch_box_width": self.swatch_box_width.value(),
         }
         payload = f"{src}|{src.stat().st_mtime_ns}|{asdict(cfg)}|{extra}"
         return hashlib.sha1(payload.encode()).hexdigest()
@@ -615,6 +639,7 @@ class ExifFrameQt(QMainWindow):
                 self.title_subtitle_gap.value(),
                 self.camera_meta_gap.value(),
                 self.swatch_box_height.value(),
+                self.swatch_box_width.value(),
             )
             self.export_progress.setValue(100)
             QMessageBox.information(self, "Done", f"Exported:\n{out}")
@@ -637,6 +662,7 @@ class ExifFrameQt(QMainWindow):
                     self.title_subtitle_gap.value(),
                     self.camera_meta_gap.value(),
                     self.swatch_box_height.value(),
+                    self.swatch_box_width.value(),
                 )
             except Exception as exc:
                 failures.append(f"{src.name}: {exc}")

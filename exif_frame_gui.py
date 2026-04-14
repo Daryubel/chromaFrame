@@ -27,7 +27,7 @@ class ExifFrameGUI:
         self.thumbnail_cache: dict[Path, ImageTk.PhotoImage] = {}
         self.preview_photo: ImageTk.PhotoImage | None = None
         self.preview_job: str | None = None
-        self.export_progress = tk.DoubleVar(value=0.0)
+        self.progress_value = tk.DoubleVar(value=0.0)
 
         self.vars = {
             "title": tk.StringVar(value="Nature's poetry"),
@@ -42,6 +42,7 @@ class ExifFrameGUI:
             "meta_size": tk.IntVar(value=38),
             "swatch_count": tk.IntVar(value=5),
             "swatch_label_size": tk.IntVar(value=20),
+            "swatch_box_width": tk.IntVar(value=520),
             "font_path": tk.StringVar(value=""),
             "dump_exif": tk.BooleanVar(value=False),
             "export_template": tk.StringVar(value="${filename}_framed"),
@@ -111,6 +112,7 @@ class ExifFrameGUI:
         self._setting_slider(settings, "Camera-Meta line space", "camera_meta_gap", 0, 200)
         self._setting_spin(settings, "Swatch count", "swatch_count", 1, 20)
         self._setting_spin(settings, "Swatch hex size", "swatch_label_size", 8, 120)
+        self._setting_slider(settings, "Swatch box width", "swatch_box_width", 80, 5000)
 
         row = ttk.Frame(settings)
         row.pack(fill=tk.X, pady=3)
@@ -125,8 +127,8 @@ class ExifFrameGUI:
         self._setting_entry(settings, "Export filename template", "export_template")
         ttk.Button(settings, text="Template Help", command=self.show_template_help).pack(anchor="w", pady=(2, 6))
 
-        ttk.Label(settings, text="Export progress").pack(anchor="w", pady=(8, 0))
-        ttk.Progressbar(settings, variable=self.export_progress, maximum=100, mode="determinate").pack(fill=tk.X, pady=(0, 8))
+        ttk.Label(settings, text="Progress").pack(anchor="w", pady=(8, 0))
+        ttk.Progressbar(settings, variable=self.progress_value, maximum=100, mode="determinate").pack(fill=tk.X, pady=(0, 8))
 
         info_panel = ttk.LabelFrame(settings, text="Current image EXIF", padding=8)
         info_panel.pack(fill=tk.BOTH, expand=True, pady=(4, 0))
@@ -229,13 +231,15 @@ class ExifFrameGUI:
         folder = filedialog.askdirectory()
         if not folder:
             return
-        files = sorted(
-            [
-                p
-                for p in Path(folder).iterdir()
-                if p.is_file() and p.suffix.lower() in {".jpg", ".jpeg"}
-            ]
-        )
+        all_items = [p for p in Path(folder).iterdir() if p.is_file()]
+        total_items = max(1, len(all_items))
+        files: list[Path] = []
+        for idx, p in enumerate(all_items, start=1):
+            if p.suffix.lower() in {".jpg", ".jpeg"}:
+                files.append(p)
+            self.progress_value.set((idx / total_items) * 100)
+            self.root.update_idletasks()
+        files = sorted(files)
         if not files:
             messagebox.showwarning("No images", "No JPG/JPEG files found in selected folder.")
             return
@@ -387,6 +391,7 @@ class ExifFrameGUI:
 
         try:
             cfg = self._build_config()
+            self.progress_value.set(10)
             with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as tmp:
                 tmp_path = Path(tmp.name)
             self.render_with_spacing(img_path, tmp_path, cfg)
@@ -395,8 +400,10 @@ class ExifFrameGUI:
             self.preview_photo = ImageTk.PhotoImage(preview)
             self.preview_label.configure(image=self.preview_photo, text="")
             tmp_path.unlink(missing_ok=True)
+            self.progress_value.set(100)
         except Exception as exc:
             self.preview_label.configure(text=f"Preview error: {exc}", image="")
+            self.progress_value.set(0)
 
     def render_with_spacing(self, input_path: Path, output_path: Path, cfg: LayoutConfig) -> None:
         title_gap = self.vars["title_subtitle_gap"].get()
@@ -461,7 +468,7 @@ class ExifFrameGUI:
 
         bottom_margin_start = cfg.top_margin + height
         swatch_height = max(24, cfg.bottom_margin // 6)
-        swatch_width = min(width // 2, 520)
+        swatch_width = max(80, min(width, self.vars["swatch_box_width"].get()))
         swatch_label_bbox = draw.textbbox((0, 0), "#FFFFFF", font=swatch_font)
         swatch_label_h = swatch_label_bbox[3] - swatch_label_bbox[1]
         swatch_block_h = swatch_height + 6 + swatch_label_h
@@ -521,9 +528,9 @@ class ExifFrameGUI:
             if not out:
                 return
             try:
-                self.export_progress.set(0)
+                self.progress_value.set(0)
                 self.render_with_spacing(self.image_paths[0], Path(out), cfg)
-                self.export_progress.set(100)
+                self.progress_value.set(100)
                 messagebox.showinfo("Done", f"Exported:\n{out}")
             except Exception as exc:
                 messagebox.showerror("Export failed", str(exc))
@@ -536,14 +543,14 @@ class ExifFrameGUI:
 
         failures: list[str] = []
         total = len(self.image_paths)
-        self.export_progress.set(0)
+        self.progress_value.set(0)
         for idx, src in enumerate(self.image_paths, start=1):
             dst = out_dir_path / f"{self._render_template_name(src)}.jpg"
             try:
                 self.render_with_spacing(src, dst, cfg)
             except Exception as exc:
                 failures.append(f"{src.name}: {exc}")
-            self.export_progress.set((idx / total) * 100)
+            self.progress_value.set((idx / total) * 100)
             self.root.update_idletasks()
 
         if failures:
