@@ -210,7 +210,7 @@ def get_exif_data(image: Image.Image) -> dict[str, Any]:
             pass
 
     # 4) Optional exifread pass (can surface tags hidden from Pillow)
-    image_path = image.filename
+    image_path = getattr(image, "filename", None)
     if exifread and image_path:
         try:
             with open(image_path, "rb") as fh:
@@ -279,6 +279,7 @@ def draw_color_swatches(
 def create_framed_image(input_path: Path, output_path: Path, cfg: LayoutConfig) -> None:
     source = Image.open(input_path)
     source = ImageOps.exif_transpose(source).convert("RGB")
+    source.filename = str(input_path)
     width, height = source.size
 
     canvas_w = width + cfg.side_margin * 2

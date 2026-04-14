@@ -404,6 +404,7 @@ class ExifFrameGUI:
 
         source = Image.open(input_path)
         source = ef.ImageOps.exif_transpose(source).convert("RGB")
+        source.filename = str(input_path)
         width, height = source.size
 
         canvas_w = width + cfg.side_margin * 2
