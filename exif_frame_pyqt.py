@@ -98,7 +98,16 @@ class RenderWorker(QRunnable):
         try:
             with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as tmp:
                 out_path = Path(tmp.name)
-            render_with_options(self.input_path, out_path, self.cfg, self.title_gap, self.camera_gap, self.swatch_height, self.swatch_width)
+            render_with_options(
+                self.input_path,
+                out_path,
+                self.cfg,
+                self.title_gap,
+                self.camera_gap,
+                self.swatch_height,
+                self.swatch_width,
+                preview_max_pixels=24_000_000,
+            )
             self.signals.done.emit(self.key, str(out_path))
         except Exception as exc:
             self.signals.error.emit(str(exc))
@@ -112,13 +121,51 @@ def render_with_options(
     camera_gap: int,
     swatch_height: int,
     swatch_width: int,
+    preview_max_pixels: int | None = None,
 ) -> None:
     from PIL import Image
 
+    Image.MAX_IMAGE_PIXELS = None
     source = Image.open(input_path)
     source = ef.ImageOps.exif_transpose(source).convert("RGB")
     source.filename = str(input_path)
     width, height = source.size
+
+    scale = 1.0
+    if preview_max_pixels and preview_max_pixels > 0:
+        output_pixels = (width + cfg.side_margin * 2) * (height + cfg.top_margin + cfg.bottom_margin)
+        if output_pixels > preview_max_pixels:
+            scale = math.sqrt(preview_max_pixels / float(output_pixels))
+
+    def _scaled(v: int, min_value: int = 1) -> int:
+        return max(min_value, int(round(v * scale)))
+
+    if scale < 1.0:
+        resample_lanczos = Image.Resampling.LANCZOS if hasattr(Image, "Resampling") else Image.LANCZOS
+        width = _scaled(width)
+        height = _scaled(height)
+        source = source.resize((width, height), resample_lanczos)
+        cfg = LayoutConfig(
+            frame_color=cfg.frame_color,
+            top_margin=_scaled(cfg.top_margin, 0),
+            bottom_margin=_scaled(cfg.bottom_margin, 0),
+            side_margin=_scaled(cfg.side_margin, 0),
+            title=cfg.title,
+            subtitle=cfg.subtitle,
+            font_path=cfg.font_path,
+            title_size=_scaled(cfg.title_size),
+            subtitle_size=_scaled(cfg.subtitle_size),
+            info_size=_scaled(cfg.info_size),
+            meta_size=_scaled(cfg.meta_size),
+            swatch_count=cfg.swatch_count,
+            swatch_label_size=_scaled(cfg.swatch_label_size),
+            dump_exif=cfg.dump_exif,
+            swatch_box_width=_scaled(cfg.swatch_box_width),
+        )
+        title_gap = _scaled(title_gap, 0)
+        camera_gap = _scaled(camera_gap, 0)
+        swatch_height = _scaled(swatch_height)
+        swatch_width = _scaled(swatch_width)
 
     canvas_w = width + cfg.side_margin * 2
     canvas_h = height + cfg.top_margin + cfg.bottom_margin
@@ -277,6 +324,10 @@ class ExifFrameQt(QMainWindow):
         # Right settings panel
         right = QWidget()
         right_layout = QVBoxLayout(right)
+        settings_scroll = QScrollArea()
+        settings_scroll.setWidgetResizable(True)
+        settings_body = QWidget()
+        settings_layout = QVBoxLayout(settings_body)
         form = QFormLayout()
 
         self.title_edit = QLineEdit("Nature's poetry")
@@ -331,7 +382,10 @@ class ExifFrameQt(QMainWindow):
         form.addRow("", help_btn)
         form.addRow("", self.dump_exif)
 
-        right_layout.addLayout(form)
+        settings_layout.addLayout(form)
+        settings_body.setLayout(settings_layout)
+        settings_scroll.setWidget(settings_body)
+        right_layout.addWidget(settings_scroll, 1)
 
         self.export_progress = QProgressBar()
         self.export_progress.setRange(0, 100)
@@ -459,9 +513,22 @@ class ExifFrameQt(QMainWindow):
         QMessageBox.information(self, "Apply", f"Current settings will be used for {len(self.image_paths)} image(s).")
 
     def rebuild_minimap(self) -> None:
+        from PIL import Image
+
+        Image.MAX_IMAGE_PIXELS = None
         self.mini_list.clear()
         for p in self.image_paths:
-            pix = QPixmap(str(p)).scaled(140, 90, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation) if PYQT_VER == 6 else QPixmap(str(p)).scaled(140, 90, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+            pix = QPixmap()
+            try:
+                with Image.open(p) as img:
+                    img = ef.ImageOps.exif_transpose(img).convert("RGB")
+                    img.thumbnail((140, 90))
+                    data = img.tobytes("raw", "RGB")
+                    fmt = QImage.Format.Format_RGB888 if PYQT_VER == 6 else QImage.Format_RGB888
+                    qimg = QImage(data, img.width, img.height, img.width * 3, fmt)
+                    pix = QPixmap.fromImage(qimg.copy())
+            except Exception:
+                pix = QPixmap(str(p)).scaled(140, 90, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation) if PYQT_VER == 6 else QPixmap(str(p)).scaled(140, 90, Qt.KeepAspectRatio, Qt.SmoothTransformation)
             item = QListWidgetItem(p.name)
             item.setIcon(QIcon(pix))
             self.mini_list.addItem(item)
@@ -491,6 +558,7 @@ class ExifFrameQt(QMainWindow):
             p = self.image_paths[self.current_index]
             from PIL import Image as PILImage
 
+            PILImage.MAX_IMAGE_PIXELS = None
             with PILImage.open(p) as image:
                 exif = get_exif_data(image)
             if not exif:

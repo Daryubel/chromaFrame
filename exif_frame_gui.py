@@ -96,8 +96,18 @@ class ExifFrameGUI:
         self.mini_canvas.create_window((0, 0), window=self.mini_inner, anchor="nw")
         self.mini_inner.bind("<Configure>", lambda _: self.mini_canvas.configure(scrollregion=self.mini_canvas.bbox("all")))
 
-        settings = ttk.LabelFrame(body, text="Settings", padding=10)
-        settings.pack(side=tk.RIGHT, fill=tk.Y, padx=(0, 8), pady=(0, 8))
+        settings_outer = ttk.LabelFrame(body, text="Settings")
+        settings_outer.pack(side=tk.RIGHT, fill=tk.BOTH, padx=(0, 8), pady=(0, 8))
+        settings_canvas = tk.Canvas(settings_outer, highlightthickness=0, width=420)
+        settings_scroll = ttk.Scrollbar(settings_outer, orient=tk.VERTICAL, command=settings_canvas.yview)
+        settings_canvas.configure(yscrollcommand=settings_scroll.set)
+        settings_scroll.pack(side=tk.RIGHT, fill=tk.Y)
+        settings_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        settings = ttk.Frame(settings_canvas, padding=10)
+        settings_window = settings_canvas.create_window((0, 0), window=settings, anchor="nw")
+        settings.bind("<Configure>", lambda _: settings_canvas.configure(scrollregion=settings_canvas.bbox("all")))
+        settings_canvas.bind("<Configure>", lambda e: settings_canvas.itemconfigure(settings_window, width=e.width))
 
         self._setting_entry(settings, "Title", "title")
         self._setting_entry(settings, "Subtitle (blank=auto date)", "subtitle")
@@ -158,7 +168,9 @@ class ExifFrameGUI:
         ttk.Label(row, text=label).pack(anchor="w")
         controls = ttk.Frame(row)
         controls.pack(fill=tk.X)
-        ttk.Scale(controls, from_=mn, to=mx, orient=tk.HORIZONTAL, variable=self.vars[key]).pack(side=tk.LEFT, fill=tk.X, expand=True)
+        tk.Scale(controls, from_=mn, to=mx, orient=tk.HORIZONTAL, variable=self.vars[key], resolution=1, showvalue=False).pack(
+            side=tk.LEFT, fill=tk.X, expand=True
+        )
         ttk.Spinbox(controls, from_=mn, to=mx, textvariable=self.vars[key], width=7).pack(side=tk.LEFT, padx=(6, 0))
 
     def _wire_live_updates(self) -> None:
