@@ -10,7 +10,8 @@ import tempfile
 from dataclasses import asdict
 from pathlib import Path
 
-from exif_frame import LayoutConfig, create_framed_image, get_exif_data, parse_hex_color
+import exif_frame as ef
+from exif_frame import LayoutConfig, get_exif_data, parse_hex_color
 
 try:
     from PyQt6.QtCore import QObject, QRunnable, Qt, QThreadPool, QTimer, pyqtSignal
@@ -82,21 +83,118 @@ class WorkerSignals(QObject):
 
 
 class RenderWorker(QRunnable):
-    def __init__(self, key: str, input_path: Path, cfg: LayoutConfig):
+    def __init__(self, key: str, input_path: Path, cfg: LayoutConfig, title_gap: int, camera_gap: int, swatch_height: int):
         super().__init__()
         self.key = key
         self.input_path = input_path
         self.cfg = cfg
+        self.title_gap = title_gap
+        self.camera_gap = camera_gap
+        self.swatch_height = swatch_height
         self.signals = WorkerSignals()
 
     def run(self) -> None:
         try:
             with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as tmp:
                 out_path = Path(tmp.name)
-            create_framed_image(self.input_path, out_path, self.cfg)
+            render_with_options(self.input_path, out_path, self.cfg, self.title_gap, self.camera_gap, self.swatch_height)
             self.signals.done.emit(self.key, str(out_path))
         except Exception as exc:
             self.signals.error.emit(str(exc))
+
+
+def render_with_options(input_path: Path, output_path: Path, cfg: LayoutConfig, title_gap: int, camera_gap: int, swatch_height: int) -> None:
+    from PIL import Image
+
+    source = Image.open(input_path)
+    source = ef.ImageOps.exif_transpose(source).convert("RGB")
+    source.filename = str(input_path)
+    width, height = source.size
+
+    canvas_w = width + cfg.side_margin * 2
+    canvas_h = height + cfg.top_margin + cfg.bottom_margin
+    canvas = Image.new("RGB", (canvas_w, canvas_h), cfg.frame_color)
+    canvas.paste(source, (cfg.side_margin, cfg.top_margin))
+    draw = ef.ImageDraw.Draw(canvas)
+
+    title_font = ef.load_font(cfg.font_path, cfg.title_size)
+    subtitle_font = ef.load_font(cfg.font_path, cfg.subtitle_size)
+    info_font = ef.load_font(cfg.font_path, cfg.info_size)
+    meta_font = ef.load_font(cfg.font_path, cfg.meta_size)
+    swatch_font = ef.load_font(cfg.font_path, cfg.swatch_label_size)
+
+    exif = ef.get_exif_data(source)
+    make = str(ef._decode_if_bytes(ef._first_present(exif, "Make") or "")).strip()
+    model = str(ef._decode_if_bytes(ef._first_present(exif, "Model", "LensModel") or "")).strip()
+    camera = f"{make} {model}".strip() or "Unknown Camera"
+    date_value = ef._format_date(ef._first_present(exif, "DateTimeOriginal", "CreateDate", "DateTime"))
+    subtitle = cfg.subtitle if cfg.subtitle else (f"PHOTOGRAPHED IN : {date_value}" if date_value else "")
+
+    gps = exif.get("GPSInfo", {}) if isinstance(exif.get("GPSInfo"), dict) else {}
+    lat = ef._format_gps_coord(gps.get("GPSLatitude"), gps.get("GPSLatitudeRef"), "lat") if gps else None
+    lon = ef._format_gps_coord(gps.get("GPSLongitude"), gps.get("GPSLongitudeRef"), "lon") if gps else None
+    gps_line = f"{lat} {lon}" if lat and lon else ""
+
+    focal_length = ef._to_float_fraction(ef._first_present(exif, "FocalLength", "FocalLengthIn35mmFilm"))
+    f_number = ef._to_float_fraction(ef._first_present(exif, "FNumber", "ApertureValue"))
+    exposure = ef._first_present(exif, "ExposureTime", "ShutterSpeedValue")
+    iso = ef._decode_if_bytes(ef._first_present(exif, "ISOSpeedRatings", "PhotographicSensitivity", "ISO"))
+    specs = "    ".join(
+        [
+            f"{focal_length:.0f}mm" if focal_length else "--mm",
+            f"f/{f_number:.1f}" if f_number else "f/--",
+            ef._format_exposure(exposure),
+            f"ISO{iso}" if iso else "ISO--",
+        ]
+    )
+
+    pad_x = cfg.side_margin
+    title_bbox = draw.textbbox((0, 0), cfg.title, font=title_font)
+    title_h = title_bbox[3] - title_bbox[1]
+    subtitle_h = 0
+    if subtitle:
+        subtitle_bbox = draw.textbbox((0, 0), subtitle, font=subtitle_font)
+        subtitle_h = subtitle_bbox[3] - subtitle_bbox[1]
+    top_block_h = title_h + (title_gap if subtitle else 0) + subtitle_h
+    top_y = max(0, int((cfg.top_margin - top_block_h) / 2))
+    draw.text((pad_x, top_y), cfg.title, fill=(20, 20, 20), font=title_font)
+    if subtitle:
+        draw.text((pad_x, top_y + title_h + title_gap), subtitle, fill=(120, 120, 120), font=subtitle_font)
+
+    bottom_margin_start = cfg.top_margin + height
+    swatch_w = min(width // 2, 520)
+    swatch_h = max(8, swatch_height)
+    swatch_label_bbox = draw.textbbox((0, 0), "#FFFFFF", font=swatch_font)
+    swatch_label_h = swatch_label_bbox[3] - swatch_label_bbox[1]
+    swatch_block_h = swatch_h + 6 + swatch_label_h
+    colors = ef.dominant_colors(source, n_colors=cfg.swatch_count)
+    swatch_y = bottom_margin_start + max(0, int((cfg.bottom_margin - swatch_block_h) / 2))
+    ef.draw_color_swatches(draw, colors, pad_x, swatch_y, swatch_w, swatch_h, swatch_font)
+
+    right_x = canvas_w - cfg.side_margin
+    specs_bbox = draw.textbbox((0, 0), specs, font=meta_font)
+    specs_h = specs_bbox[3] - specs_bbox[1]
+    camera_bbox = draw.textbbox((0, 0), camera, font=info_font)
+    camera_w = camera_bbox[2] - camera_bbox[0]
+    camera_h = camera_bbox[3] - camera_bbox[1]
+    text_block_h = camera_h + camera_gap + specs_h
+    if gps_line:
+        gps_bbox = draw.textbbox((0, 0), gps_line, font=meta_font)
+        gps_h = gps_bbox[3] - gps_bbox[1]
+        text_block_h += 8 + gps_h
+    start_y = bottom_margin_start + max(0, int((cfg.bottom_margin - text_block_h) / 2))
+    draw.text((right_x - camera_w, start_y), camera, fill=(20, 20, 20), font=info_font)
+    specs_y = start_y + camera_h + camera_gap
+    specs_w = specs_bbox[2] - specs_bbox[0]
+    draw.text((right_x - specs_w, specs_y), specs, fill=(120, 120, 120), font=meta_font)
+    if gps_line:
+        gps_y = specs_y + specs_h + 8
+        gps_bbox = draw.textbbox((0, 0), gps_line, font=meta_font)
+        gps_w = gps_bbox[2] - gps_bbox[0]
+        draw.text((right_x - gps_w, gps_y), gps_line, fill=(120, 120, 120), font=meta_font)
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    canvas.save(output_path, quality=95)
 
 
 class ExifFrameQt(QMainWindow):
@@ -143,15 +241,18 @@ class ExifFrameQt(QMainWindow):
         left = QWidget()
         left_layout = QVBoxLayout(left)
 
+        self.selection_label = QLabel("No image selected")
+        left_layout.addWidget(self.selection_label)
+
+        preview_splitter = QSplitter(Qt.Orientation.Vertical if PYQT_VER == 6 else Qt.Vertical)
+        left_layout.addWidget(preview_splitter, 1)
+
         self.preview = QLabel("Open an image or folder")
         self.preview.setAlignment(_align_center())
         self.preview_scroll = QScrollArea()
         self.preview_scroll.setWidgetResizable(True)
         self.preview_scroll.setWidget(self.preview)
-        left_layout.addWidget(self.preview_scroll)
-
-        self.selection_label = QLabel("No image selected")
-        left_layout.addWidget(self.selection_label)
+        preview_splitter.addWidget(self.preview_scroll)
 
         self.mini_list = QListWidget()
         self.mini_list.setViewMode(QListWidget.ViewMode.ListMode if PYQT_VER == 6 else QListWidget.ListMode)
@@ -159,7 +260,8 @@ class ExifFrameQt(QMainWindow):
         self.mini_list.setWrapping(False)
         self.mini_list.setIconSize(QPixmap(140, 90).size())
         self.mini_list.currentRowChanged.connect(self.select_index)
-        left_layout.addWidget(self.mini_list)
+        preview_splitter.addWidget(self.mini_list)
+        preview_splitter.setSizes([760, 220])
 
         splitter.addWidget(left)
 
@@ -188,6 +290,9 @@ class ExifFrameQt(QMainWindow):
         meta_size_row, self.meta_size = self._slider_spin(8, 300, 38)
         swatch_count_row, self.swatch_count = self._slider_spin(1, 20, 5)
         swatch_hex_row, self.swatch_label_size = self._slider_spin(8, 120, 20)
+        title_gap_row, self.title_subtitle_gap = self._slider_spin(0, 200, 8)
+        camera_gap_row, self.camera_meta_gap = self._slider_spin(0, 200, 12)
+        swatch_box_row, self.swatch_box_height = self._slider_spin(8, 300, 40)
         self.font_path = QLineEdit("")
         self.export_template = QLineEdit("${filename}_framed")
         self.dump_exif = QCheckBox("Dump EXIF")
@@ -207,6 +312,9 @@ class ExifFrameQt(QMainWindow):
         form.addRow("Meta size", meta_size_row)
         form.addRow("Swatch count", swatch_count_row)
         form.addRow("Swatch hex size", swatch_hex_row)
+        form.addRow("Title-Subtitle gap", title_gap_row)
+        form.addRow("Camera-Meta gap", camera_gap_row)
+        form.addRow("Swatch box height", swatch_box_row)
         form.addRow("Font path", self.font_path)
         form.addRow("Export template", self.export_template)
         form.addRow("", help_btn)
@@ -241,6 +349,9 @@ class ExifFrameQt(QMainWindow):
             self.meta_size,
             self.swatch_count,
             self.swatch_label_size,
+            self.title_subtitle_gap,
+            self.camera_meta_gap,
+            self.swatch_box_height,
             self.font_path,
             self.dump_exif,
         ]:
@@ -416,7 +527,14 @@ class ExifFrameQt(QMainWindow):
             return
 
         self.preview.setText("Rendering preview...")
-        worker = RenderWorker(key, src, cfg)
+        worker = RenderWorker(
+            key,
+            src,
+            cfg,
+            self.title_subtitle_gap.value(),
+            self.camera_meta_gap.value(),
+            self.swatch_box_height.value(),
+        )
         worker.signals.done.connect(self._preview_done)
         worker.signals.error.connect(lambda msg: self.preview.setText(f"Preview error: {msg}"))
         self.pool.start(worker)
@@ -443,7 +561,12 @@ class ExifFrameQt(QMainWindow):
             self._set_preview_pixmap(self.preview_cache[self.pending_key])
 
     def _preview_key(self, src: Path, cfg: LayoutConfig) -> str:
-        payload = f"{src}|{src.stat().st_mtime_ns}|{asdict(cfg)}"
+        extra = {
+            "title_gap": self.title_subtitle_gap.value(),
+            "camera_gap": self.camera_meta_gap.value(),
+            "swatch_box_height": self.swatch_box_height.value(),
+        }
+        payload = f"{src}|{src.stat().st_mtime_ns}|{asdict(cfg)}|{extra}"
         return hashlib.sha1(payload.encode()).hexdigest()
 
     def _render_template_name(self, src: Path) -> str:
@@ -485,7 +608,14 @@ class ExifFrameQt(QMainWindow):
             out, _ = QFileDialog.getSaveFileName(self, "Export image", suggested, "JPEG (*.jpg)")
             if not out:
                 return
-            create_framed_image(self.image_paths[0], Path(out), cfg)
+            render_with_options(
+                self.image_paths[0],
+                Path(out),
+                cfg,
+                self.title_subtitle_gap.value(),
+                self.camera_meta_gap.value(),
+                self.swatch_box_height.value(),
+            )
             self.export_progress.setValue(100)
             QMessageBox.information(self, "Done", f"Exported:\n{out}")
             return
@@ -494,19 +624,22 @@ class ExifFrameQt(QMainWindow):
         if not out_dir:
             return
 
-        progress = QProgressDialog("Exporting...", "Cancel", 0, len(self.image_paths), self)
-        progress.setWindowModality(Qt.WindowModality.WindowModal if PYQT_VER == 6 else Qt.WindowModal)
         failures: list[str] = []
+        self.export_progress.setValue(0)
 
         for idx, src in enumerate(self.image_paths, start=1):
-            if progress.wasCanceled():
-                break
             dst = Path(out_dir) / f"{self._render_template_name(src)}.jpg"
             try:
-                create_framed_image(src, dst, cfg)
+                render_with_options(
+                    src,
+                    dst,
+                    cfg,
+                    self.title_subtitle_gap.value(),
+                    self.camera_meta_gap.value(),
+                    self.swatch_box_height.value(),
+                )
             except Exception as exc:
                 failures.append(f"{src.name}: {exc}")
-            progress.setValue(idx)
             self.export_progress.setValue(int((idx / len(self.image_paths)) * 100))
             QApplication.processEvents()
 
