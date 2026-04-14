@@ -161,7 +161,6 @@ def render_with_options(
             swatch_count=cfg.swatch_count,
             swatch_label_size=_scaled(cfg.swatch_label_size),
             dump_exif=cfg.dump_exif,
-            swatch_box_width=_scaled(cfg.swatch_box_width),
         )
         title_gap = _scaled(title_gap, 0)
         camera_gap = _scaled(camera_gap, 0)
