@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import re
 import tempfile
 import tkinter as tk
 from pathlib import Path
@@ -22,6 +23,7 @@ class ExifFrameGUI:
         self.image_paths: list[Path] = []
         self.current_index = 0
         self.thumbnail_cache: dict[Path, ImageTk.PhotoImage] = {}
+        self.preview_input_cache: dict[Path, Path] = {}
         self.preview_photo: ImageTk.PhotoImage | None = None
         self.preview_job: str | None = None
         self.export_progress = tk.DoubleVar(value=0.0)
@@ -41,6 +43,7 @@ class ExifFrameGUI:
             "swatch_label_size": tk.IntVar(value=20),
             "font_path": tk.StringVar(value=""),
             "dump_exif": tk.BooleanVar(value=False),
+            "export_template": tk.StringVar(value="${filename}_framed"),
         }
 
         self._build_ui()
@@ -58,6 +61,7 @@ class ExifFrameGUI:
 
         ttk.Button(toolbar, text="Open Image", command=self.open_image).pack(side=tk.LEFT, padx=4)
         ttk.Button(toolbar, text="Open Folder", command=self.open_folder).pack(side=tk.LEFT, padx=4)
+        ttk.Button(toolbar, text="Close", command=self.clear_images).pack(side=tk.LEFT, padx=4)
         ttk.Button(toolbar, text="Apply Settings To All", command=self.apply_settings_to_all).pack(side=tk.LEFT, padx=4)
         ttk.Button(toolbar, text="Export", command=self.export).pack(side=tk.LEFT, padx=4)
 
@@ -72,6 +76,8 @@ class ExifFrameGUI:
 
         mini_wrap = ttk.Frame(preview_wrap)
         mini_wrap.pack(fill=tk.X, pady=(8, 0))
+        self.selection_label = ttk.Label(mini_wrap, text="No image selected")
+        self.selection_label.pack(anchor="w", pady=(0, 4))
 
         self.mini_canvas = tk.Canvas(mini_wrap, height=110)
         h_scroll = ttk.Scrollbar(mini_wrap, orient=tk.HORIZONTAL, command=self.mini_canvas.xview)
@@ -108,6 +114,8 @@ class ExifFrameGUI:
 
         self._setting_entry(settings, "Font path (optional)", "font_path")
         ttk.Checkbutton(settings, text="Dump EXIF to console", variable=self.vars["dump_exif"]).pack(anchor="w", pady=3)
+        self._setting_entry(settings, "Export filename template", "export_template")
+        ttk.Button(settings, text="Template Help", command=self.show_template_help).pack(anchor="w", pady=(2, 6))
 
         ttk.Label(settings, text="Export progress").pack(anchor="w", pady=(8, 0))
         ttk.Progressbar(settings, variable=self.export_progress, maximum=100, mode="determinate").pack(fill=tk.X, pady=(0, 8))
@@ -148,6 +156,30 @@ class ExifFrameGUI:
             var.trace_add("write", lambda *_: self.schedule_preview())
         self.root.bind("<Configure>", lambda _: self.schedule_preview())
 
+    def clear_images(self) -> None:
+        self.image_paths = []
+        self.current_index = 0
+        self.preview_photo = None
+        self.preview_label.configure(text="Open an image or folder to start.", image="")
+        self.selection_label.configure(text="No image selected")
+        self.exif_text.configure(state=tk.NORMAL)
+        self.exif_text.delete("1.0", tk.END)
+        self.exif_text.insert("1.0", "Open an image to view EXIF metadata.")
+        self.exif_text.configure(state=tk.DISABLED)
+        for child in self.mini_inner.winfo_children():
+            child.destroy()
+        self.thumbnail_cache.clear()
+        for tmp in self.preview_input_cache.values():
+            tmp.unlink(missing_ok=True)
+        self.preview_input_cache.clear()
+
+    def _cleanup_preview_cache(self, keep: set[Path] | None = None) -> None:
+        keep = keep or set()
+        for src, tmp in list(self.preview_input_cache.items()):
+            if src not in keep:
+                tmp.unlink(missing_ok=True)
+                del self.preview_input_cache[src]
+
     def pick_color(self) -> None:
         color, _ = colorchooser.askcolor(color=self.vars["frame_color"].get(), parent=self.root)
         if color:
@@ -158,9 +190,11 @@ class ExifFrameGUI:
         path = filedialog.askopenfilename(filetypes=[("JPEG", "*.jpg *.jpeg")])
         if not path:
             return
+        self._cleanup_preview_cache()
         self.image_paths = [Path(path)]
         self.current_index = 0
         self.refresh_minimap()
+        self.update_selection_label()
         self.update_exif_panel()
         self.schedule_preview()
 
@@ -178,9 +212,11 @@ class ExifFrameGUI:
         if not files:
             messagebox.showwarning("No images", "No JPG/JPEG files found in selected folder.")
             return
+        self._cleanup_preview_cache(set(files))
         self.image_paths = files
         self.current_index = 0
         self.refresh_minimap()
+        self.update_selection_label()
         self.update_exif_panel()
         self.schedule_preview()
 
@@ -207,8 +243,61 @@ class ExifFrameGUI:
 
     def select_image(self, index: int) -> None:
         self.current_index = index
+        self.update_selection_label()
         self.update_exif_panel()
         self.schedule_preview()
+
+    def update_selection_label(self) -> None:
+        img_path = self.current_image_path
+        if not img_path:
+            self.selection_label.configure(text="No image selected")
+            return
+        total = len(self.image_paths) if self.image_paths else 1
+        self.selection_label.configure(text=f"{img_path}   ({self.current_index + 1} of {total})")
+
+    def show_template_help(self) -> None:
+        msg = (
+            "Template placeholders:\\n"
+            "- ${filename}: original filename without extension\\n"
+            "- ${stem}: same as filename\\n"
+            "- ${ext}: original extension without dot\\n"
+            "- ${make}, ${model}, ${iso}, ${datetime}, ${fnumber}, ${focallength}\\n"
+            "- Any raw EXIF key, e.g. ${DateTimeOriginal}, ${LensModel}\\n\\n"
+            "Example:\\n"
+            "${datetime}_${make}_${filename}_framed"
+        )
+        messagebox.showinfo("Export template help", msg)
+
+    def _render_template_name(self, src: Path) -> str:
+        replacements = {
+            "filename": src.stem,
+            "stem": src.stem,
+            "ext": src.suffix.lstrip("."),
+        }
+        try:
+            with Image.open(src) as image:
+                exif = get_exif_data(image)
+            for k, v in exif.items():
+                if isinstance(v, dict):
+                    continue
+                key = str(k)
+                val = str(v).strip()
+                replacements[key] = val
+                replacements[key.lower()] = val
+        except Exception:
+            pass
+
+        template = self.vars["export_template"].get().strip() or "${filename}_framed"
+
+        def repl(match: re.Match[str]) -> str:
+            token = match.group(1)
+            return replacements.get(token, replacements.get(token.lower(), ""))
+
+        rendered = re.sub(r"\\$\\{([^}]+)\\}", repl, template).strip()
+        if not rendered:
+            rendered = f"{src.stem}_framed"
+        rendered = re.sub(r'[\\\\/:*?\"<>|]+', "_", rendered)
+        return rendered
 
     def update_exif_panel(self) -> None:
         img_path = self.current_image_path
@@ -272,9 +361,10 @@ class ExifFrameGUI:
 
         try:
             cfg = self._build_config()
+            preview_input = self._get_preview_input(img_path)
             with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as tmp:
                 tmp_path = Path(tmp.name)
-            create_framed_image(img_path, tmp_path, cfg)
+            create_framed_image(preview_input, tmp_path, cfg)
             preview = Image.open(tmp_path).convert("RGB")
             preview.thumbnail((max(300, self.preview_label.winfo_width() - 20), max(300, self.preview_label.winfo_height() - 20)))
             self.preview_photo = ImageTk.PhotoImage(preview)
@@ -282,6 +372,22 @@ class ExifFrameGUI:
             tmp_path.unlink(missing_ok=True)
         except Exception as exc:
             self.preview_label.configure(text=f"Preview error: {exc}", image="")
+
+    def _get_preview_input(self, src: Path) -> Path:
+        cached = self.preview_input_cache.get(src)
+        if cached and cached.exists():
+            return cached
+
+        with Image.open(src) as image:
+            img = image.convert("RGB")
+            max_dim = 2200
+            if max(img.size) > max_dim:
+                img.thumbnail((max_dim, max_dim))
+            with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as tmp:
+                preview_path = Path(tmp.name)
+            img.save(preview_path, quality=72, optimize=True)
+        self.preview_input_cache[src] = preview_path
+        return preview_path
 
     def apply_settings_to_all(self) -> None:
         if not self.image_paths:
@@ -301,7 +407,12 @@ class ExifFrameGUI:
             return
 
         if len(self.image_paths) == 1:
-            out = filedialog.asksaveasfilename(defaultextension=".jpg", filetypes=[("JPEG", "*.jpg")])
+            suggested = f"{self._render_template_name(self.image_paths[0])}.jpg"
+            out = filedialog.asksaveasfilename(
+                defaultextension=".jpg",
+                initialfile=suggested,
+                filetypes=[("JPEG", "*.jpg")],
+            )
             if not out:
                 return
             try:
@@ -322,7 +433,7 @@ class ExifFrameGUI:
         total = len(self.image_paths)
         self.export_progress.set(0)
         for idx, src in enumerate(self.image_paths, start=1):
-            dst = out_dir_path / f"{src.stem}_framed.jpg"
+            dst = out_dir_path / f"{self._render_template_name(src)}.jpg"
             try:
                 create_framed_image(src, dst, cfg)
             except Exception as exc:
