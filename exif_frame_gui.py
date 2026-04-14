@@ -461,7 +461,7 @@ class ExifFrameGUI:
 
         bottom_margin_start = cfg.top_margin + height
         swatch_height = max(24, cfg.bottom_margin // 6)
-        swatch_width = min(width // 2, 520)
+        swatch_width = min(width // 2, 1000)
         swatch_label_bbox = draw.textbbox((0, 0), "#FFFFFF", font=swatch_font)
         swatch_label_h = swatch_label_bbox[3] - swatch_label_bbox[1]
         swatch_block_h = swatch_height + 6 + swatch_label_h
