@@ -23,7 +23,6 @@ class ExifFrameGUI:
         self.image_paths: list[Path] = []
         self.current_index = 0
         self.thumbnail_cache: dict[Path, ImageTk.PhotoImage] = {}
-        self.preview_input_cache: dict[Path, Path] = {}
         self.preview_photo: ImageTk.PhotoImage | None = None
         self.preview_job: str | None = None
         self.export_progress = tk.DoubleVar(value=0.0)
@@ -169,16 +168,6 @@ class ExifFrameGUI:
         for child in self.mini_inner.winfo_children():
             child.destroy()
         self.thumbnail_cache.clear()
-        for tmp in self.preview_input_cache.values():
-            tmp.unlink(missing_ok=True)
-        self.preview_input_cache.clear()
-
-    def _cleanup_preview_cache(self, keep: set[Path] | None = None) -> None:
-        keep = keep or set()
-        for src, tmp in list(self.preview_input_cache.items()):
-            if src not in keep:
-                tmp.unlink(missing_ok=True)
-                del self.preview_input_cache[src]
 
     def pick_color(self) -> None:
         color, _ = colorchooser.askcolor(color=self.vars["frame_color"].get(), parent=self.root)
@@ -190,7 +179,6 @@ class ExifFrameGUI:
         path = filedialog.askopenfilename(filetypes=[("JPEG", "*.jpg *.jpeg")])
         if not path:
             return
-        self._cleanup_preview_cache()
         self.image_paths = [Path(path)]
         self.current_index = 0
         self.refresh_minimap()
@@ -212,7 +200,6 @@ class ExifFrameGUI:
         if not files:
             messagebox.showwarning("No images", "No JPG/JPEG files found in selected folder.")
             return
-        self._cleanup_preview_cache(set(files))
         self.image_paths = files
         self.current_index = 0
         self.refresh_minimap()
@@ -293,7 +280,7 @@ class ExifFrameGUI:
             token = match.group(1)
             return replacements.get(token, replacements.get(token.lower(), ""))
 
-        rendered = re.sub(r"\\$\\{([^}]+)\\}", repl, template).strip()
+        rendered = re.sub(r"\$\{([^}]+)\}", repl, template).strip()
         if not rendered:
             rendered = f"{src.stem}_framed"
         rendered = re.sub(r'[\\\\/:*?\"<>|]+', "_", rendered)
@@ -361,10 +348,9 @@ class ExifFrameGUI:
 
         try:
             cfg = self._build_config()
-            preview_input = self._get_preview_input(img_path)
             with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as tmp:
                 tmp_path = Path(tmp.name)
-            create_framed_image(preview_input, tmp_path, cfg)
+            create_framed_image(img_path, tmp_path, cfg)
             preview = Image.open(tmp_path).convert("RGB")
             preview.thumbnail((max(300, self.preview_label.winfo_width() - 20), max(300, self.preview_label.winfo_height() - 20)))
             self.preview_photo = ImageTk.PhotoImage(preview)
@@ -372,22 +358,6 @@ class ExifFrameGUI:
             tmp_path.unlink(missing_ok=True)
         except Exception as exc:
             self.preview_label.configure(text=f"Preview error: {exc}", image="")
-
-    def _get_preview_input(self, src: Path) -> Path:
-        cached = self.preview_input_cache.get(src)
-        if cached and cached.exists():
-            return cached
-
-        with Image.open(src) as image:
-            img = image.convert("RGB")
-            max_dim = 2200
-            if max(img.size) > max_dim:
-                img.thumbnail((max_dim, max_dim))
-            with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as tmp:
-                preview_path = Path(tmp.name)
-            img.save(preview_path, quality=72, optimize=True)
-        self.preview_input_cache[src] = preview_path
-        return preview_path
 
     def apply_settings_to_all(self) -> None:
         if not self.image_paths:
