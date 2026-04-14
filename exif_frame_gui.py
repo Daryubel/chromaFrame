@@ -10,7 +10,7 @@ from tkinter import filedialog, messagebox, colorchooser, ttk
 
 from PIL import Image, ImageTk
 
-from exif_frame import LayoutConfig, create_framed_image, parse_hex_color
+from exif_frame import LayoutConfig, create_framed_image, get_exif_data, parse_hex_color
 
 
 class ExifFrameGUI:
@@ -24,6 +24,7 @@ class ExifFrameGUI:
         self.thumbnail_cache: dict[Path, ImageTk.PhotoImage] = {}
         self.preview_photo: ImageTk.PhotoImage | None = None
         self.preview_job: str | None = None
+        self.export_progress = tk.DoubleVar(value=0.0)
 
         self.vars = {
             "title": tk.StringVar(value="Nature's poetry"),
@@ -87,13 +88,13 @@ class ExifFrameGUI:
 
         self._setting_entry(settings, "Title", "title")
         self._setting_entry(settings, "Subtitle (blank=auto date)", "subtitle")
-        self._setting_spin(settings, "Top margin", "top_margin", 0, 2000)
-        self._setting_spin(settings, "Bottom margin", "bottom_margin", 0, 2000)
-        self._setting_spin(settings, "Side margin", "side_margin", 0, 1000)
-        self._setting_spin(settings, "Title size", "title_size", 8, 300)
-        self._setting_spin(settings, "Subtitle size", "subtitle_size", 8, 300)
-        self._setting_spin(settings, "Camera size", "info_size", 8, 300)
-        self._setting_spin(settings, "Meta size", "meta_size", 8, 300)
+        self._setting_slider(settings, "Top margin", "top_margin", 0, 2000)
+        self._setting_slider(settings, "Bottom margin", "bottom_margin", 0, 2000)
+        self._setting_slider(settings, "Side margin", "side_margin", 0, 1000)
+        self._setting_slider(settings, "Title size", "title_size", 8, 300)
+        self._setting_slider(settings, "Subtitle size", "subtitle_size", 8, 300)
+        self._setting_slider(settings, "Camera size", "info_size", 8, 300)
+        self._setting_slider(settings, "Meta size", "meta_size", 8, 300)
         self._setting_spin(settings, "Swatch count", "swatch_count", 1, 20)
         self._setting_spin(settings, "Swatch hex size", "swatch_label_size", 8, 120)
 
@@ -108,6 +109,19 @@ class ExifFrameGUI:
         self._setting_entry(settings, "Font path (optional)", "font_path")
         ttk.Checkbutton(settings, text="Dump EXIF to console", variable=self.vars["dump_exif"]).pack(anchor="w", pady=3)
 
+        ttk.Label(settings, text="Export progress").pack(anchor="w", pady=(8, 0))
+        ttk.Progressbar(settings, variable=self.export_progress, maximum=100, mode="determinate").pack(fill=tk.X, pady=(0, 8))
+
+        info_panel = ttk.LabelFrame(settings, text="Current image EXIF", padding=8)
+        info_panel.pack(fill=tk.BOTH, expand=True, pady=(4, 0))
+        self.exif_text = tk.Text(info_panel, height=14, wrap="word")
+        exif_scroll = ttk.Scrollbar(info_panel, orient=tk.VERTICAL, command=self.exif_text.yview)
+        self.exif_text.configure(yscrollcommand=exif_scroll.set)
+        self.exif_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        exif_scroll.pack(side=tk.RIGHT, fill=tk.Y)
+        self.exif_text.insert("1.0", "Open an image to view EXIF metadata.")
+        self.exif_text.configure(state=tk.DISABLED)
+
     def _setting_entry(self, parent: ttk.Widget, label: str, key: str) -> None:
         row = ttk.Frame(parent)
         row.pack(fill=tk.X, pady=3)
@@ -119,6 +133,15 @@ class ExifFrameGUI:
         row.pack(fill=tk.X, pady=3)
         ttk.Label(row, text=label).pack(anchor="w")
         ttk.Spinbox(row, from_=mn, to=mx, textvariable=self.vars[key]).pack(fill=tk.X)
+
+    def _setting_slider(self, parent: ttk.Widget, label: str, key: str, mn: int, mx: int) -> None:
+        row = ttk.Frame(parent)
+        row.pack(fill=tk.X, pady=3)
+        ttk.Label(row, text=label).pack(anchor="w")
+        controls = ttk.Frame(row)
+        controls.pack(fill=tk.X)
+        ttk.Scale(controls, from_=mn, to=mx, orient=tk.HORIZONTAL, variable=self.vars[key]).pack(side=tk.LEFT, fill=tk.X, expand=True)
+        ttk.Spinbox(controls, from_=mn, to=mx, textvariable=self.vars[key], width=7).pack(side=tk.LEFT, padx=(6, 0))
 
     def _wire_live_updates(self) -> None:
         for var in self.vars.values():
@@ -138,6 +161,7 @@ class ExifFrameGUI:
         self.image_paths = [Path(path)]
         self.current_index = 0
         self.refresh_minimap()
+        self.update_exif_panel()
         self.schedule_preview()
 
     def open_folder(self) -> None:
@@ -157,6 +181,7 @@ class ExifFrameGUI:
         self.image_paths = files
         self.current_index = 0
         self.refresh_minimap()
+        self.update_exif_panel()
         self.schedule_preview()
 
     def refresh_minimap(self) -> None:
@@ -182,7 +207,35 @@ class ExifFrameGUI:
 
     def select_image(self, index: int) -> None:
         self.current_index = index
+        self.update_exif_panel()
         self.schedule_preview()
+
+    def update_exif_panel(self) -> None:
+        img_path = self.current_image_path
+        self.exif_text.configure(state=tk.NORMAL)
+        self.exif_text.delete("1.0", tk.END)
+        if not img_path:
+            self.exif_text.insert("1.0", "Open an image to view EXIF metadata.")
+            self.exif_text.configure(state=tk.DISABLED)
+            return
+        try:
+            with Image.open(img_path) as image:
+                exif = get_exif_data(image)
+            if not exif:
+                self.exif_text.insert("1.0", f"{img_path.name}\n\nNo EXIF metadata found.")
+            else:
+                lines = [f"{img_path.name}", ""]
+                for k in sorted(exif.keys()):
+                    if k == "GPSInfo" and isinstance(exif[k], dict):
+                        lines.append("GPSInfo:")
+                        for gk in sorted(exif[k].keys()):
+                            lines.append(f"  {gk}: {exif[k][gk]}")
+                    else:
+                        lines.append(f"{k}: {exif[k]}")
+                self.exif_text.insert("1.0", "\n".join(lines))
+        except Exception as exc:
+            self.exif_text.insert("1.0", f"Failed to read EXIF:\n{exc}")
+        self.exif_text.configure(state=tk.DISABLED)
 
     def _build_config(self) -> LayoutConfig:
         frame_color = parse_hex_color(self.vars["frame_color"].get())
@@ -252,7 +305,9 @@ class ExifFrameGUI:
             if not out:
                 return
             try:
+                self.export_progress.set(0)
                 create_framed_image(self.image_paths[0], Path(out), cfg)
+                self.export_progress.set(100)
                 messagebox.showinfo("Done", f"Exported:\n{out}")
             except Exception as exc:
                 messagebox.showerror("Export failed", str(exc))
@@ -264,12 +319,16 @@ class ExifFrameGUI:
         out_dir_path = Path(out_dir)
 
         failures: list[str] = []
-        for src in self.image_paths:
+        total = len(self.image_paths)
+        self.export_progress.set(0)
+        for idx, src in enumerate(self.image_paths, start=1):
             dst = out_dir_path / f"{src.stem}_framed.jpg"
             try:
                 create_framed_image(src, dst, cfg)
             except Exception as exc:
                 failures.append(f"{src.name}: {exc}")
+            self.export_progress.set((idx / total) * 100)
+            self.root.update_idletasks()
 
         if failures:
             messagebox.showwarning("Export completed with issues", "\n".join(failures[:10]))
