@@ -210,7 +210,7 @@ def get_exif_data(image: Image.Image) -> dict[str, Any]:
             pass
 
     # 4) Optional exifread pass (can surface tags hidden from Pillow)
-    image_path = getattr(image, "filename", None)
+    image_path = image.filename
     if exifread and image_path:
         try:
             with open(image_path, "rb") as fh:
