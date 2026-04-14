@@ -98,8 +98,15 @@ class ExifFrameGUI:
 
         settings_outer = ttk.LabelFrame(body, text="Settings")
         settings_outer.pack(side=tk.RIGHT, fill=tk.BOTH, padx=(0, 8), pady=(0, 8))
-        settings_canvas = tk.Canvas(settings_outer, highlightthickness=0, width=420)
-        settings_scroll = ttk.Scrollbar(settings_outer, orient=tk.VERTICAL, command=settings_canvas.yview)
+        settings_pane = ttk.Panedwindow(settings_outer, orient=tk.VERTICAL)
+        settings_pane.pack(fill=tk.BOTH, expand=True)
+        settings_top = ttk.Frame(settings_pane)
+        settings_bottom = ttk.Frame(settings_pane)
+        settings_pane.add(settings_top, weight=4)
+        settings_pane.add(settings_bottom, weight=2)
+
+        settings_canvas = tk.Canvas(settings_top, highlightthickness=0, width=420)
+        settings_scroll = ttk.Scrollbar(settings_top, orient=tk.VERTICAL, command=settings_canvas.yview)
         settings_canvas.configure(yscrollcommand=settings_scroll.set)
         settings_scroll.pack(side=tk.RIGHT, fill=tk.Y)
         settings_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
@@ -140,8 +147,8 @@ class ExifFrameGUI:
         ttk.Label(settings, text="Progress").pack(anchor="w", pady=(8, 0))
         ttk.Progressbar(settings, variable=self.progress_value, maximum=100, mode="determinate").pack(fill=tk.X, pady=(0, 8))
 
-        info_panel = ttk.LabelFrame(settings, text="Current image EXIF", padding=8)
-        info_panel.pack(fill=tk.BOTH, expand=True, pady=(4, 0))
+        info_panel = ttk.LabelFrame(settings_bottom, text="Current image EXIF", padding=8)
+        info_panel.pack(fill=tk.BOTH, expand=True)
         self.exif_text = tk.Text(info_panel, height=14, wrap="word")
         exif_scroll = ttk.Scrollbar(info_panel, orient=tk.VERTICAL, command=self.exif_text.yview)
         self.exif_text.configure(yscrollcommand=exif_scroll.set)

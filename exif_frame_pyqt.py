@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import hashlib
+import math
 import re
 import sys
 import tempfile
@@ -324,6 +325,8 @@ class ExifFrameQt(QMainWindow):
         # Right settings panel
         right = QWidget()
         right_layout = QVBoxLayout(right)
+        right_splitter = QSplitter(Qt.Orientation.Vertical if PYQT_VER == 6 else Qt.Vertical)
+        right_layout.addWidget(right_splitter, 1)
         settings_scroll = QScrollArea()
         settings_scroll.setWidgetResizable(True)
         settings_body = QWidget()
@@ -385,17 +388,21 @@ class ExifFrameQt(QMainWindow):
         settings_layout.addLayout(form)
         settings_body.setLayout(settings_layout)
         settings_scroll.setWidget(settings_body)
-        right_layout.addWidget(settings_scroll, 1)
+        right_splitter.addWidget(settings_scroll)
 
+        bottom_panel = QWidget()
+        bottom_layout = QVBoxLayout(bottom_panel)
+        bottom_layout.setContentsMargins(0, 0, 0, 0)
         self.export_progress = QProgressBar()
         self.export_progress.setRange(0, 100)
-        right_layout.addWidget(QLabel("Progress"))
-        right_layout.addWidget(self.export_progress)
-
-        right_layout.addWidget(QLabel("Current image EXIF"))
+        bottom_layout.addWidget(QLabel("Progress"))
+        bottom_layout.addWidget(self.export_progress)
+        bottom_layout.addWidget(QLabel("Current image EXIF"))
         self.exif_box = QTextEdit()
         self.exif_box.setReadOnly(True)
-        right_layout.addWidget(self.exif_box, 1)
+        bottom_layout.addWidget(self.exif_box, 1)
+        right_splitter.addWidget(bottom_panel)
+        right_splitter.setSizes([620, 320])
 
         splitter.addWidget(right)
         splitter.setSizes([1100, 500])
