@@ -32,6 +32,7 @@ try:
         QProgressDialog,
         QPushButton,
         QScrollArea,
+        QSlider,
         QSpinBox,
         QSplitter,
         QTextEdit,
@@ -60,6 +61,7 @@ except ImportError:
         QProgressDialog,
         QPushButton,
         QScrollArea,
+        QSlider,
         QSpinBox,
         QSplitter,
         QTextEdit,
@@ -152,8 +154,8 @@ class ExifFrameQt(QMainWindow):
         left_layout.addWidget(self.selection_label)
 
         self.mini_list = QListWidget()
-        self.mini_list.setViewMode(QListWidget.ViewMode.IconMode if PYQT_VER == 6 else QListWidget.IconMode)
-        self.mini_list.setFlow(QListWidget.Flow.LeftToRight if PYQT_VER == 6 else QListWidget.LeftToRight)
+        self.mini_list.setViewMode(QListWidget.ViewMode.ListMode if PYQT_VER == 6 else QListWidget.ListMode)
+        self.mini_list.setFlow(QListWidget.Flow.TopToBottom if PYQT_VER == 6 else QListWidget.TopToBottom)
         self.mini_list.setWrapping(False)
         self.mini_list.setIconSize(QPixmap(140, 90).size())
         self.mini_list.currentRowChanged.connect(self.select_index)
@@ -177,15 +179,15 @@ class ExifFrameQt(QMainWindow):
         color_l.addWidget(self.frame_color_edit)
         color_l.addWidget(color_btn)
 
-        self.top_margin = self._spin(0, 2000, 170)
-        self.bottom_margin = self._spin(0, 2000, 190)
-        self.side_margin = self._spin(0, 1000, 40)
-        self.title_size = self._spin(8, 300, 62)
-        self.subtitle_size = self._spin(8, 300, 42)
-        self.info_size = self._spin(8, 300, 64)
-        self.meta_size = self._spin(8, 300, 38)
-        self.swatch_count = self._spin(1, 20, 5)
-        self.swatch_label_size = self._spin(8, 120, 20)
+        top_margin_row, self.top_margin = self._slider_spin(0, 2000, 170)
+        bottom_margin_row, self.bottom_margin = self._slider_spin(0, 2000, 190)
+        side_margin_row, self.side_margin = self._slider_spin(0, 1000, 40)
+        title_size_row, self.title_size = self._slider_spin(8, 300, 62)
+        subtitle_size_row, self.subtitle_size = self._slider_spin(8, 300, 42)
+        info_size_row, self.info_size = self._slider_spin(8, 300, 64)
+        meta_size_row, self.meta_size = self._slider_spin(8, 300, 38)
+        swatch_count_row, self.swatch_count = self._slider_spin(1, 20, 5)
+        swatch_hex_row, self.swatch_label_size = self._slider_spin(8, 120, 20)
         self.font_path = QLineEdit("")
         self.export_template = QLineEdit("${filename}_framed")
         self.dump_exif = QCheckBox("Dump EXIF")
@@ -196,15 +198,15 @@ class ExifFrameQt(QMainWindow):
         form.addRow("Title", self.title_edit)
         form.addRow("Subtitle", self.subtitle_edit)
         form.addRow("Frame color", color_row)
-        form.addRow("Top margin", self.top_margin)
-        form.addRow("Bottom margin", self.bottom_margin)
-        form.addRow("Side margin", self.side_margin)
-        form.addRow("Title size", self.title_size)
-        form.addRow("Subtitle size", self.subtitle_size)
-        form.addRow("Camera size", self.info_size)
-        form.addRow("Meta size", self.meta_size)
-        form.addRow("Swatch count", self.swatch_count)
-        form.addRow("Swatch hex size", self.swatch_label_size)
+        form.addRow("Top margin", top_margin_row)
+        form.addRow("Bottom margin", bottom_margin_row)
+        form.addRow("Side margin", side_margin_row)
+        form.addRow("Title size", title_size_row)
+        form.addRow("Subtitle size", subtitle_size_row)
+        form.addRow("Camera size", info_size_row)
+        form.addRow("Meta size", meta_size_row)
+        form.addRow("Swatch count", swatch_count_row)
+        form.addRow("Swatch hex size", swatch_hex_row)
         form.addRow("Font path", self.font_path)
         form.addRow("Export template", self.export_template)
         form.addRow("", help_btn)
@@ -249,6 +251,20 @@ class ExifFrameQt(QMainWindow):
         s.setRange(mn, mx)
         s.setValue(val)
         return s
+
+    def _slider_spin(self, mn: int, mx: int, val: int) -> tuple[QWidget, QSpinBox]:
+        row = QWidget()
+        layout = QHBoxLayout(row)
+        layout.setContentsMargins(0, 0, 0, 0)
+        slider = QSlider(Qt.Orientation.Horizontal if PYQT_VER == 6 else Qt.Horizontal)
+        slider.setRange(mn, mx)
+        spin = self._spin(mn, mx, val)
+        slider.setValue(val)
+        slider.valueChanged.connect(spin.setValue)
+        spin.valueChanged.connect(slider.setValue)
+        layout.addWidget(slider, 1)
+        layout.addWidget(spin)
+        return row, spin
 
     def _connect_changed(self, widget: QWidget) -> None:
         if isinstance(widget, QLineEdit):
