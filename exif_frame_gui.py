@@ -215,6 +215,8 @@ class ExifFrameGUI:
         else:
             self.manual_swatch_wrap.pack_forget()
             self.active_pick_index = None
+        if enabled and self.current_image_path:
+            self._load_manual_colors(self.current_image_path)
         count = self.vars["swatch_count"].get()
         for i, child in enumerate(self.manual_swatch_wrap.winfo_children()[:-1]):
             if enabled and i < count:
@@ -267,6 +269,8 @@ class ExifFrameGUI:
 
     def _load_manual_colors(self, img_path: Path) -> None:
         count = self.vars["swatch_count"].get()
+        if self.vars["manual_swatch_enable"].get() and img_path not in self.manual_swatch_map:
+            self.manual_swatch_map[img_path] = self._auto_swatch_hexes(img_path, count)
         colors = list(self.manual_swatch_map.get(img_path, []))
         while len(colors) < count:
             colors.append("#000000")
@@ -276,6 +280,15 @@ class ExifFrameGUI:
             chip, var = self.manual_swatch_rows[i]
             var.set(colors[i])
             chip.configure(bg=colors[i])
+
+    def _auto_swatch_hexes(self, img_path: Path, count: int) -> list[str]:
+        try:
+            with Image.open(img_path) as image:
+                image = ef.ImageOps.exif_transpose(image).convert("RGB")
+                colors = ef.dominant_colors(image, n_colors=count)
+            return [f"#{r:02X}{g:02X}{b:02X}" for r, g, b in colors[:count]]
+        except Exception:
+            return ["#000000"] * count
 
     def load_defaults(self) -> None:
         if not self.defaults_path.exists():

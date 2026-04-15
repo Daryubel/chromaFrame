@@ -282,6 +282,9 @@ class ExifFrameQt(QMainWindow):
         self.active_pick_index: int | None = None
         self.manual_swatch_rows: list[tuple[QLabel, QLineEdit, QPushButton]] = []
         self.manual_swatch_map: dict[Path, list[str]] = {}
+        self.preview_zoom = 1.0
+        self.base_preview_pixmap = QPixmap()
+        self._pan_last = None
 
         self.pool = QThreadPool.globalInstance()
         self.preview_timer = QTimer(self)
@@ -324,10 +327,13 @@ class ExifFrameQt(QMainWindow):
 
         self.preview = QLabel("Open an image or folder")
         self.preview.setAlignment(_align_center())
-        self.preview.mousePressEvent = self._on_preview_click  # type: ignore[method-assign]
+        self.preview.mousePressEvent = self._on_preview_mouse_press  # type: ignore[method-assign]
+        self.preview.mouseMoveEvent = self._on_preview_mouse_move  # type: ignore[method-assign]
+        self.preview.mouseReleaseEvent = self._on_preview_mouse_release  # type: ignore[method-assign]
         self.preview_scroll = QScrollArea()
-        self.preview_scroll.setWidgetResizable(True)
+        self.preview_scroll.setWidgetResizable(False)
         self.preview_scroll.setWidget(self.preview)
+        self.preview_scroll.viewport().wheelEvent = self._on_preview_wheel  # type: ignore[method-assign]
         preview_splitter.addWidget(self.preview_scroll)
 
         self.mini_list = QListWidget()
@@ -523,14 +529,43 @@ class ExifFrameQt(QMainWindow):
             btn.setVisible(visible)
         if not enabled:
             self.active_pick_index = None
-        if self.current_image_path():
-            self._load_manual_colors(self.current_image_path())
+        p = self.current_image_path()
+        if enabled and p and p not in self.manual_swatch_map:
+            self.manual_swatch_map[p] = self._auto_swatch_hexes(p, count)
+        if p:
+            self._load_manual_colors(p)
 
     def _start_pick_color(self, idx: int) -> None:
         self.active_pick_index = idx
         self.selection_label.setText(f"Pick mode: click preview for swatch {idx + 1}")
 
-    def _on_preview_click(self, event) -> None:
+    def _on_preview_mouse_press(self, event) -> None:
+        if self.active_pick_index is not None:
+            self._sample_preview_color(event)
+            return
+        self._pan_last = event.pos()
+
+    def _on_preview_mouse_move(self, event) -> None:
+        if self._pan_last is None:
+            return
+        dx = event.pos().x() - self._pan_last.x()
+        dy = event.pos().y() - self._pan_last.y()
+        self.preview_scroll.horizontalScrollBar().setValue(self.preview_scroll.horizontalScrollBar().value() - dx)
+        self.preview_scroll.verticalScrollBar().setValue(self.preview_scroll.verticalScrollBar().value() - dy)
+        self._pan_last = event.pos()
+
+    def _on_preview_mouse_release(self, _event) -> None:
+        self._pan_last = None
+
+    def _on_preview_wheel(self, event) -> None:
+        delta = event.angleDelta().y() if hasattr(event, "angleDelta") else 0
+        if delta > 0:
+            self.preview_zoom = min(6.0, self.preview_zoom * 1.12)
+        elif delta < 0:
+            self.preview_zoom = max(0.2, self.preview_zoom / 1.12)
+        self._apply_preview_transform()
+
+    def _sample_preview_color(self, event) -> None:
         if self.active_pick_index is None:
             return
         pix = self.preview.pixmap()
@@ -572,6 +607,17 @@ class ExifFrameQt(QMainWindow):
             chip, hex_edit, _ = self.manual_swatch_rows[i]
             hex_edit.setText(colors[i])
             chip.setStyleSheet(f"background:{colors[i]};border:1px solid #888;")
+
+    def _auto_swatch_hexes(self, img_path: Path, count: int) -> list[str]:
+        try:
+            from PIL import Image as PILImage
+
+            with PILImage.open(img_path) as image:
+                image = ef.ImageOps.exif_transpose(image).convert("RGB")
+                cols = ef.dominant_colors(image, n_colors=count)
+            return [f"#{r:02X}{g:02X}{b:02X}" for r, g, b in cols[:count]]
+        except Exception:
+            return ["#000000"] * count
 
     def _manual_color_tuples(self, img_path: Path | None = None) -> list[tuple[int, int, int]] | None:
         if not self.manual_swatch_enable.isChecked():
@@ -777,10 +823,21 @@ class ExifFrameQt(QMainWindow):
         self.export_progress.setValue(100)
 
     def _set_preview_pixmap(self, pix: QPixmap) -> None:
-        w = max(300, self.preview_scroll.viewport().width() - 20)
-        h = max(300, self.preview_scroll.viewport().height() - 20)
-        scaled = pix.scaled(w, h, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation) if PYQT_VER == 6 else pix.scaled(w, h, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+        self.base_preview_pixmap = pix
+        self._apply_preview_transform()
+
+    def _apply_preview_transform(self) -> None:
+        if self.base_preview_pixmap.isNull():
+            return
+        vw = max(300, self.preview_scroll.viewport().width() - 20)
+        vh = max(300, self.preview_scroll.viewport().height() - 20)
+        fit_scale = min(vw / max(1, self.base_preview_pixmap.width()), vh / max(1, self.base_preview_pixmap.height()))
+        final_scale = max(0.05, fit_scale * self.preview_zoom)
+        tw = max(1, int(self.base_preview_pixmap.width() * final_scale))
+        th = max(1, int(self.base_preview_pixmap.height() * final_scale))
+        scaled = self.base_preview_pixmap.scaled(tw, th, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation) if PYQT_VER == 6 else self.base_preview_pixmap.scaled(tw, th, Qt.KeepAspectRatio, Qt.SmoothTransformation)
         self.preview.setPixmap(scaled)
+        self.preview.resize(scaled.size())
         self.preview.setText("")
 
     def resizeEvent(self, event):  # type: ignore[override]
