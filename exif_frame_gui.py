@@ -26,8 +26,11 @@ class ExifFrameGUI:
         self.current_index = 0
         self.thumbnail_cache: dict[Path, ImageTk.PhotoImage] = {}
         self.preview_photo: ImageTk.PhotoImage | None = None
+        self.preview_image: Image.Image | None = None
         self.preview_job: str | None = None
         self.progress_value = tk.DoubleVar(value=0.0)
+        self.active_pick_index: int | None = None
+        self.manual_swatch_rows: list[tuple[tk.Canvas, tk.StringVar]] = []
 
         self.vars = {
             "title": tk.StringVar(value="Nature's poetry"),
@@ -48,6 +51,7 @@ class ExifFrameGUI:
             "export_template": tk.StringVar(value="${filename}_framed"),
             "title_subtitle_gap": tk.IntVar(value=8),
             "camera_meta_gap": tk.IntVar(value=12),
+            "manual_swatch_enable": tk.BooleanVar(value=False),
         }
         self.defaults_path = Path(__file__).with_name("exif_frame_gui.ini")
         self.load_defaults()
@@ -80,6 +84,7 @@ class ExifFrameGUI:
 
         self.preview_label = ttk.Label(preview_wrap, anchor="center")
         self.preview_label.pack(fill=tk.BOTH, expand=True)
+        self.preview_label.bind("<Button-1>", self.on_preview_click)
 
         mini_wrap = ttk.Frame(preview_wrap)
         mini_wrap.pack(fill=tk.X, pady=(8, 0))
@@ -130,6 +135,21 @@ class ExifFrameGUI:
         self._setting_spin(settings, "Swatch count", "swatch_count", 1, 20)
         self._setting_spin(settings, "Swatch hex size", "swatch_label_size", 8, 120)
         self._setting_slider(settings, "Swatch box width", "swatch_box_width", 80, 5000)
+        ttk.Checkbutton(settings, text="Enable manual swatch colors", variable=self.vars["manual_swatch_enable"], command=self.sync_manual_swatches).pack(anchor="w", pady=(2, 6))
+        self.manual_swatch_wrap = ttk.Frame(settings)
+        self.manual_swatch_wrap.pack(fill=tk.X, pady=(0, 6))
+        for i in range(20):
+            row = ttk.Frame(self.manual_swatch_wrap)
+            chip = tk.Canvas(row, width=18, height=18, highlightthickness=1, highlightbackground="#666666", bg="#000000")
+            chip.pack(side=tk.LEFT)
+            hex_var = tk.StringVar(value="#000000")
+            hex_entry = ttk.Entry(row, textvariable=hex_var, width=10, state="readonly")
+            hex_entry.pack(side=tk.LEFT, padx=(6, 6))
+            ttk.Button(row, text=f"Pick {i+1}", command=lambda idx=i: self.start_pick_color(idx)).pack(side=tk.LEFT)
+            self.manual_swatch_rows.append((chip, hex_var))
+            row.pack(fill=tk.X, pady=2)
+        ttk.Label(self.manual_swatch_wrap, text="Click Pick N, then click a color in preview.").pack(anchor="w")
+        self.sync_manual_swatches()
 
         row = ttk.Frame(settings)
         row.pack(fill=tk.X, pady=3)
@@ -183,7 +203,55 @@ class ExifFrameGUI:
     def _wire_live_updates(self) -> None:
         for var in self.vars.values():
             var.trace_add("write", lambda *_: self.schedule_preview())
+        self.vars["swatch_count"].trace_add("write", lambda *_: self.sync_manual_swatches())
+        self.vars["manual_swatch_enable"].trace_add("write", lambda *_: self.sync_manual_swatches())
         self.root.bind("<Configure>", lambda _: self.schedule_preview())
+
+    def sync_manual_swatches(self) -> None:
+        enabled = self.vars["manual_swatch_enable"].get()
+        if enabled:
+            self.manual_swatch_wrap.pack(fill=tk.X, pady=(0, 6))
+        else:
+            self.manual_swatch_wrap.pack_forget()
+            self.active_pick_index = None
+        count = self.vars["swatch_count"].get()
+        for i, child in enumerate(self.manual_swatch_wrap.winfo_children()[:-1]):
+            if enabled and i < count:
+                child.pack(fill=tk.X, pady=2)
+            else:
+                child.pack_forget()
+
+    def start_pick_color(self, idx: int) -> None:
+        self.active_pick_index = idx
+        self.preview_label.configure(text=f"Pick mode: click preview for swatch {idx + 1}", image=self.preview_photo or "")
+
+    def on_preview_click(self, event: tk.Event) -> None:
+        if self.active_pick_index is None or self.preview_image is None:
+            return
+        img_w, img_h = self.preview_image.size
+        lbl_w = max(1, self.preview_label.winfo_width())
+        lbl_h = max(1, self.preview_label.winfo_height())
+        off_x = max(0, (lbl_w - img_w) // 2)
+        off_y = max(0, (lbl_h - img_h) // 2)
+        x = event.x - off_x
+        y = event.y - off_y
+        if x < 0 or y < 0 or x >= img_w or y >= img_h:
+            return
+        r, g, b = self.preview_image.getpixel((x, y))
+        hex_color = f"#{r:02X}{g:02X}{b:02X}"
+        chip, hex_var = self.manual_swatch_rows[self.active_pick_index]
+        chip.configure(bg=hex_color)
+        hex_var.set(hex_color)
+        self.active_pick_index = None
+        self.schedule_preview()
+
+    def manual_color_tuples(self) -> list[tuple[int, int, int]] | None:
+        if not self.vars["manual_swatch_enable"].get():
+            return None
+        out: list[tuple[int, int, int]] = []
+        for i in range(self.vars["swatch_count"].get()):
+            out.append(parse_hex_color(self.manual_swatch_rows[i][1].get()))
+        return out
 
     def load_defaults(self) -> None:
         if not self.defaults_path.exists():
@@ -219,6 +287,7 @@ class ExifFrameGUI:
         self.image_paths = []
         self.current_index = 0
         self.preview_photo = None
+        self.preview_image = None
         self.preview_label.configure(text="Open an image or folder to start.", image="")
         self.selection_label.configure(text="No image selected")
         self.exif_text.configure(state=tk.NORMAL)
@@ -416,6 +485,7 @@ class ExifFrameGUI:
             self.render_with_spacing(img_path, tmp_path, cfg)
             preview = Image.open(tmp_path).convert("RGB")
             preview.thumbnail((max(300, self.preview_label.winfo_width() - 20), max(300, self.preview_label.winfo_height() - 20)))
+            self.preview_image = preview.copy()
             self.preview_photo = ImageTk.PhotoImage(preview)
             self.preview_label.configure(image=self.preview_photo, text="")
             tmp_path.unlink(missing_ok=True)
@@ -492,6 +562,10 @@ class ExifFrameGUI:
         swatch_label_h = swatch_label_bbox[3] - swatch_label_bbox[1]
         swatch_block_h = swatch_height + 6 + swatch_label_h
         colors = ef.dominant_colors(source, n_colors=cfg.swatch_count)
+        forced = self.manual_color_tuples()
+        if forced:
+            for i, c in enumerate(forced[: len(colors)]):
+                colors[i] = c
         bottom_swatch_y = bottom_margin_start + max(0, int((cfg.bottom_margin - swatch_block_h) / 2))
         ef.draw_color_swatches(draw, colors, pad_x, bottom_swatch_y, swatch_width, swatch_height, swatch_font)
 

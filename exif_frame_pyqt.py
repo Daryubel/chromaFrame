@@ -84,7 +84,17 @@ class WorkerSignals(QObject):
 
 
 class RenderWorker(QRunnable):
-    def __init__(self, key: str, input_path: Path, cfg: LayoutConfig, title_gap: int, camera_gap: int, swatch_height: int, swatch_width: int):
+    def __init__(
+        self,
+        key: str,
+        input_path: Path,
+        cfg: LayoutConfig,
+        title_gap: int,
+        camera_gap: int,
+        swatch_height: int,
+        swatch_width: int,
+        forced_colors: list[tuple[int, int, int]] | None = None,
+    ):
         super().__init__()
         self.key = key
         self.input_path = input_path
@@ -93,6 +103,7 @@ class RenderWorker(QRunnable):
         self.camera_gap = camera_gap
         self.swatch_height = swatch_height
         self.swatch_width = swatch_width
+        self.forced_colors = forced_colors
         self.signals = WorkerSignals()
 
     def run(self) -> None:
@@ -107,6 +118,7 @@ class RenderWorker(QRunnable):
                 self.camera_gap,
                 self.swatch_height,
                 self.swatch_width,
+                forced_colors=self.forced_colors,
                 preview_max_pixels=24_000_000,
             )
             self.signals.done.emit(self.key, str(out_path))
@@ -122,6 +134,7 @@ def render_with_options(
     camera_gap: int,
     swatch_height: int,
     swatch_width: int,
+    forced_colors: list[tuple[int, int, int]] | None = None,
     preview_max_pixels: int | None = None,
 ) -> None:
     from PIL import Image
@@ -224,6 +237,9 @@ def render_with_options(
     swatch_label_h = swatch_label_bbox[3] - swatch_label_bbox[1]
     swatch_block_h = swatch_h + 6 + swatch_label_h
     colors = ef.dominant_colors(source, n_colors=cfg.swatch_count)
+    if forced_colors:
+        for i, color in enumerate(forced_colors[: len(colors)]):
+            colors[i] = color
     swatch_y = bottom_margin_start + max(0, int((cfg.bottom_margin - swatch_block_h) / 2))
     ef.draw_color_swatches(draw, colors, pad_x, swatch_y, swatch_w, swatch_h, swatch_font)
 
@@ -263,6 +279,8 @@ class ExifFrameQt(QMainWindow):
         self.current_index = 0
         self.preview_cache: dict[str, QPixmap] = {}
         self.pending_key: str | None = None
+        self.active_pick_index: int | None = None
+        self.manual_swatch_rows: list[tuple[QLabel, QLineEdit, QPushButton]] = []
 
         self.pool = QThreadPool.globalInstance()
         self.preview_timer = QTimer(self)
@@ -305,6 +323,7 @@ class ExifFrameQt(QMainWindow):
 
         self.preview = QLabel("Open an image or folder")
         self.preview.setAlignment(_align_center())
+        self.preview.mousePressEvent = self._on_preview_click  # type: ignore[method-assign]
         self.preview_scroll = QScrollArea()
         self.preview_scroll.setWidgetResizable(True)
         self.preview_scroll.setWidget(self.preview)
@@ -359,6 +378,8 @@ class ExifFrameQt(QMainWindow):
         self.font_path = QLineEdit("")
         self.export_template = QLineEdit("${filename}_framed")
         self.dump_exif = QCheckBox("Dump EXIF")
+        self.manual_swatch_enable = QCheckBox("Enable manual swatch colors")
+        self.manual_swatch_enable.stateChanged.connect(self._update_manual_swatch_ui)
 
         help_btn = QPushButton("Template Help")
         help_btn.clicked.connect(self.template_help)
@@ -383,6 +404,31 @@ class ExifFrameQt(QMainWindow):
         form.addRow("Export template", self.export_template)
         form.addRow("", help_btn)
         form.addRow("", self.dump_exif)
+        form.addRow("", self.manual_swatch_enable)
+
+        self.manual_swatch_wrap = QWidget()
+        manual_layout = QVBoxLayout(self.manual_swatch_wrap)
+        manual_layout.setContentsMargins(0, 0, 0, 0)
+        for idx in range(20):
+            row = QWidget()
+            row_l = QHBoxLayout(row)
+            row_l.setContentsMargins(0, 0, 0, 0)
+            chip = QLabel("")
+            chip.setFixedSize(22, 22)
+            chip.setStyleSheet("background:#000000;border:1px solid #888;")
+            hex_edit = QLineEdit("#000000")
+            hex_edit.setReadOnly(True)
+            pick_btn = QPushButton(f"Pick {idx + 1}")
+            pick_btn.clicked.connect(lambda _=False, i=idx: self._start_pick_color(i))
+            row_l.addWidget(chip)
+            row_l.addWidget(hex_edit, 1)
+            row_l.addWidget(pick_btn)
+            manual_layout.addWidget(row)
+            self.manual_swatch_rows.append((chip, hex_edit, pick_btn))
+        self.manual_hint = QLabel("Click Pick N, then click a color in the preview.")
+        manual_layout.addWidget(self.manual_hint)
+        settings_layout.addWidget(self.manual_swatch_wrap)
+        self._update_manual_swatch_ui()
 
         settings_layout.addLayout(form)
         settings_body.setLayout(settings_layout)
@@ -426,8 +472,11 @@ class ExifFrameQt(QMainWindow):
             self.swatch_box_width,
             self.font_path,
             self.dump_exif,
+            self.manual_swatch_enable,
         ]:
             self._connect_changed(widget)
+        self.swatch_count.valueChanged.connect(self._update_manual_swatch_ui)
+        self.manual_swatch_enable.stateChanged.connect(self._update_manual_swatch_ui)
 
     def _spin(self, mn: int, mx: int, val: int) -> QSpinBox:
         s = QSpinBox()
@@ -461,6 +510,49 @@ class ExifFrameQt(QMainWindow):
         color = QColorDialog.getColor()
         if color.isValid():
             self.frame_color_edit.setText(color.name())
+
+    def _update_manual_swatch_ui(self) -> None:
+        enabled = self.manual_swatch_enable.isChecked()
+        count = self.swatch_count.value()
+        self.manual_swatch_wrap.setVisible(enabled)
+        for i, (chip, hex_edit, btn) in enumerate(self.manual_swatch_rows):
+            visible = enabled and i < count
+            chip.setVisible(visible)
+            hex_edit.setVisible(visible)
+            btn.setVisible(visible)
+        if not enabled:
+            self.active_pick_index = None
+
+    def _start_pick_color(self, idx: int) -> None:
+        self.active_pick_index = idx
+        self.preview.setText(f"Pick mode: click preview for swatch {idx + 1}")
+
+    def _on_preview_click(self, event) -> None:
+        if self.active_pick_index is None:
+            return
+        pix = self.preview.pixmap()
+        if not pix:
+            return
+        x = event.position().x() if PYQT_VER == 6 else event.x()
+        y = event.position().y() if PYQT_VER == 6 else event.y()
+        x_i, y_i = int(x), int(y)
+        if x_i < 0 or y_i < 0 or x_i >= pix.width() or y_i >= pix.height():
+            return
+        qc = pix.toImage().pixelColor(x_i, y_i)
+        hex_color = qc.name().upper()
+        chip, hex_edit, _ = self.manual_swatch_rows[self.active_pick_index]
+        chip.setStyleSheet(f"background:{hex_color};border:1px solid #888;")
+        hex_edit.setText(hex_color)
+        self.active_pick_index = None
+        self.schedule_preview()
+
+    def _manual_color_tuples(self) -> list[tuple[int, int, int]] | None:
+        if not self.manual_swatch_enable.isChecked():
+            return None
+        out: list[tuple[int, int, int]] = []
+        for i in range(self.swatch_count.value()):
+            out.append(parse_hex_color(self.manual_swatch_rows[i][1].text().strip() or "#000000"))
+        return out
 
     def template_help(self) -> None:
         QMessageBox.information(
@@ -630,6 +722,7 @@ class ExifFrameQt(QMainWindow):
             self.camera_meta_gap.value(),
             self.swatch_box_height.value(),
             self.swatch_box_width.value(),
+            self._manual_color_tuples(),
         )
         worker.signals.done.connect(self._preview_done)
         worker.signals.error.connect(lambda msg: (self.preview.setText(f"Preview error: {msg}"), self.export_progress.setValue(0)))
@@ -663,6 +756,7 @@ class ExifFrameQt(QMainWindow):
             "camera_gap": self.camera_meta_gap.value(),
             "swatch_box_height": self.swatch_box_height.value(),
             "swatch_box_width": self.swatch_box_width.value(),
+            "manual_colors": self._manual_color_tuples(),
         }
         payload = f"{src}|{src.stat().st_mtime_ns}|{asdict(cfg)}|{extra}"
         return hashlib.sha1(payload.encode()).hexdigest()
@@ -714,6 +808,7 @@ class ExifFrameQt(QMainWindow):
                 self.camera_meta_gap.value(),
                 self.swatch_box_height.value(),
                 self.swatch_box_width.value(),
+                forced_colors=self._manual_color_tuples(),
             )
             self.export_progress.setValue(100)
             QMessageBox.information(self, "Done", f"Exported:\n{out}")
@@ -737,6 +832,7 @@ class ExifFrameQt(QMainWindow):
                     self.camera_meta_gap.value(),
                     self.swatch_box_height.value(),
                     self.swatch_box_width.value(),
+                    forced_colors=self._manual_color_tuples(),
                 )
             except Exception as exc:
                 failures.append(f"{src.name}: {exc}")
