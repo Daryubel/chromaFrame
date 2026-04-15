@@ -31,6 +31,7 @@ class ExifFrameGUI:
         self.progress_value = tk.DoubleVar(value=0.0)
         self.active_pick_index: int | None = None
         self.manual_swatch_rows: list[tuple[tk.Canvas, tk.StringVar]] = []
+        self.manual_swatch_map: dict[Path, list[str]] = {}
 
         self.vars = {
             "title": tk.StringVar(value="Nature's poetry"),
@@ -223,7 +224,7 @@ class ExifFrameGUI:
 
     def start_pick_color(self, idx: int) -> None:
         self.active_pick_index = idx
-        self.preview_label.configure(text=f"Pick mode: click preview for swatch {idx + 1}", image=self.preview_photo or "")
+        self.selection_label.configure(text=f"Pick mode: click preview for swatch {idx + 1}")
 
     def on_preview_click(self, event: tk.Event) -> None:
         if self.active_pick_index is None or self.preview_image is None:
@@ -242,16 +243,39 @@ class ExifFrameGUI:
         chip, hex_var = self.manual_swatch_rows[self.active_pick_index]
         chip.configure(bg=hex_color)
         hex_var.set(hex_color)
+        img_path = self.current_image_path
+        if img_path:
+            self._persist_manual_colors(img_path)
         self.active_pick_index = None
         self.schedule_preview()
 
-    def manual_color_tuples(self) -> list[tuple[int, int, int]] | None:
+    def manual_color_tuples(self, img_path: Path | None = None) -> list[tuple[int, int, int]] | None:
         if not self.vars["manual_swatch_enable"].get():
             return None
+        if img_path is None:
+            img_path = self.current_image_path
+        if img_path:
+            self._load_manual_colors(img_path)
         out: list[tuple[int, int, int]] = []
         for i in range(self.vars["swatch_count"].get()):
             out.append(parse_hex_color(self.manual_swatch_rows[i][1].get()))
         return out
+
+    def _persist_manual_colors(self, img_path: Path) -> None:
+        count = self.vars["swatch_count"].get()
+        self.manual_swatch_map[img_path] = [self.manual_swatch_rows[i][1].get() for i in range(count)]
+
+    def _load_manual_colors(self, img_path: Path) -> None:
+        count = self.vars["swatch_count"].get()
+        colors = list(self.manual_swatch_map.get(img_path, []))
+        while len(colors) < count:
+            colors.append("#000000")
+        colors = colors[:count]
+        self.manual_swatch_map[img_path] = colors
+        for i in range(count):
+            chip, var = self.manual_swatch_rows[i]
+            var.set(colors[i])
+            chip.configure(bg=colors[i])
 
     def load_defaults(self) -> None:
         if not self.defaults_path.exists():
@@ -288,6 +312,7 @@ class ExifFrameGUI:
         self.current_index = 0
         self.preview_photo = None
         self.preview_image = None
+        self.manual_swatch_map.clear()
         self.preview_label.configure(text="Open an image or folder to start.", image="")
         self.selection_label.configure(text="No image selected")
         self.exif_text.configure(state=tk.NORMAL)
@@ -310,6 +335,7 @@ class ExifFrameGUI:
             return
         self.image_paths = [Path(path)]
         self.current_index = 0
+        self._load_manual_colors(self.image_paths[0])
         self.refresh_minimap()
         self.update_selection_label()
         self.update_exif_panel()
@@ -333,6 +359,7 @@ class ExifFrameGUI:
             return
         self.image_paths = files
         self.current_index = 0
+        self._load_manual_colors(self.image_paths[0])
         self.refresh_minimap()
         self.update_selection_label()
         self.update_exif_panel()
@@ -360,7 +387,12 @@ class ExifFrameGUI:
             btn.pack(side=tk.LEFT, padx=4, pady=2)
 
     def select_image(self, index: int) -> None:
+        old = self.current_image_path
+        if old:
+            self._persist_manual_colors(old)
         self.current_index = index
+        if self.current_image_path:
+            self._load_manual_colors(self.current_image_path)
         self.update_selection_label()
         self.update_exif_panel()
         self.schedule_preview()
@@ -482,7 +514,7 @@ class ExifFrameGUI:
             self.progress_value.set(10)
             with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as tmp:
                 tmp_path = Path(tmp.name)
-            self.render_with_spacing(img_path, tmp_path, cfg)
+            self.render_with_spacing(img_path, tmp_path, cfg, self.manual_color_tuples(img_path))
             preview = Image.open(tmp_path).convert("RGB")
             preview.thumbnail((max(300, self.preview_label.winfo_width() - 20), max(300, self.preview_label.winfo_height() - 20)))
             self.preview_image = preview.copy()
@@ -494,7 +526,13 @@ class ExifFrameGUI:
             self.preview_label.configure(text=f"Preview error: {exc}", image="")
             self.progress_value.set(0)
 
-    def render_with_spacing(self, input_path: Path, output_path: Path, cfg: LayoutConfig) -> None:
+    def render_with_spacing(
+        self,
+        input_path: Path,
+        output_path: Path,
+        cfg: LayoutConfig,
+        forced_colors: list[tuple[int, int, int]] | None = None,
+    ) -> None:
         title_gap = self.vars["title_subtitle_gap"].get()
         camera_gap = self.vars["camera_meta_gap"].get()
 
@@ -562,9 +600,8 @@ class ExifFrameGUI:
         swatch_label_h = swatch_label_bbox[3] - swatch_label_bbox[1]
         swatch_block_h = swatch_height + 6 + swatch_label_h
         colors = ef.dominant_colors(source, n_colors=cfg.swatch_count)
-        forced = self.manual_color_tuples()
-        if forced:
-            for i, c in enumerate(forced[: len(colors)]):
+        if forced_colors:
+            for i, c in enumerate(forced_colors[: len(colors)]):
                 colors[i] = c
         bottom_swatch_y = bottom_margin_start + max(0, int((cfg.bottom_margin - swatch_block_h) / 2))
         ef.draw_color_swatches(draw, colors, pad_x, bottom_swatch_y, swatch_width, swatch_height, swatch_font)
@@ -622,7 +659,7 @@ class ExifFrameGUI:
                 return
             try:
                 self.progress_value.set(0)
-                self.render_with_spacing(self.image_paths[0], Path(out), cfg)
+                self.render_with_spacing(self.image_paths[0], Path(out), cfg, self.manual_color_tuples(self.image_paths[0]))
                 self.progress_value.set(100)
                 messagebox.showinfo("Done", f"Exported:\n{out}")
             except Exception as exc:
@@ -640,7 +677,7 @@ class ExifFrameGUI:
         for idx, src in enumerate(self.image_paths, start=1):
             dst = out_dir_path / f"{self._render_template_name(src)}.jpg"
             try:
-                self.render_with_spacing(src, dst, cfg)
+                self.render_with_spacing(src, dst, cfg, self.manual_color_tuples(src))
             except Exception as exc:
                 failures.append(f"{src.name}: {exc}")
             self.progress_value.set((idx / total) * 100)

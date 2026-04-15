@@ -281,6 +281,7 @@ class ExifFrameQt(QMainWindow):
         self.pending_key: str | None = None
         self.active_pick_index: int | None = None
         self.manual_swatch_rows: list[tuple[QLabel, QLineEdit, QPushButton]] = []
+        self.manual_swatch_map: dict[Path, list[str]] = {}
 
         self.pool = QThreadPool.globalInstance()
         self.preview_timer = QTimer(self)
@@ -522,10 +523,12 @@ class ExifFrameQt(QMainWindow):
             btn.setVisible(visible)
         if not enabled:
             self.active_pick_index = None
+        if self.current_image_path():
+            self._load_manual_colors(self.current_image_path())
 
     def _start_pick_color(self, idx: int) -> None:
         self.active_pick_index = idx
-        self.preview.setText(f"Pick mode: click preview for swatch {idx + 1}")
+        self.selection_label.setText(f"Pick mode: click preview for swatch {idx + 1}")
 
     def _on_preview_click(self, event) -> None:
         if self.active_pick_index is None:
@@ -543,12 +546,40 @@ class ExifFrameQt(QMainWindow):
         chip, hex_edit, _ = self.manual_swatch_rows[self.active_pick_index]
         chip.setStyleSheet(f"background:{hex_color};border:1px solid #888;")
         hex_edit.setText(hex_color)
+        p = self.current_image_path()
+        if p:
+            self._persist_manual_colors(p)
         self.active_pick_index = None
         self.schedule_preview()
 
-    def _manual_color_tuples(self) -> list[tuple[int, int, int]] | None:
+    def current_image_path(self) -> Path | None:
+        if not self.image_paths:
+            return None
+        return self.image_paths[self.current_index]
+
+    def _persist_manual_colors(self, img_path: Path) -> None:
+        count = self.swatch_count.value()
+        self.manual_swatch_map[img_path] = [self.manual_swatch_rows[i][1].text() for i in range(count)]
+
+    def _load_manual_colors(self, img_path: Path) -> None:
+        count = self.swatch_count.value()
+        colors = list(self.manual_swatch_map.get(img_path, []))
+        while len(colors) < count:
+            colors.append("#000000")
+        colors = colors[:count]
+        self.manual_swatch_map[img_path] = colors
+        for i in range(count):
+            chip, hex_edit, _ = self.manual_swatch_rows[i]
+            hex_edit.setText(colors[i])
+            chip.setStyleSheet(f"background:{colors[i]};border:1px solid #888;")
+
+    def _manual_color_tuples(self, img_path: Path | None = None) -> list[tuple[int, int, int]] | None:
         if not self.manual_swatch_enable.isChecked():
             return None
+        if img_path is None:
+            img_path = self.current_image_path()
+        if img_path:
+            self._load_manual_colors(img_path)
         out: list[tuple[int, int, int]] = []
         for i in range(self.swatch_count.value()):
             out.append(parse_hex_color(self.manual_swatch_rows[i][1].text().strip() or "#000000"))
@@ -568,6 +599,7 @@ class ExifFrameQt(QMainWindow):
             return
         self.image_paths = [Path(file_path)]
         self.current_index = 0
+        self._load_manual_colors(self.image_paths[0])
         self.rebuild_minimap()
         self.update_selection_label()
         self.update_exif_panel()
@@ -591,6 +623,7 @@ class ExifFrameQt(QMainWindow):
             return
         self.image_paths = files
         self.current_index = 0
+        self._load_manual_colors(self.image_paths[0])
         self.rebuild_minimap()
         self.update_selection_label()
         self.update_exif_panel()
@@ -599,6 +632,7 @@ class ExifFrameQt(QMainWindow):
     def clear_images(self) -> None:
         self.image_paths = []
         self.current_index = 0
+        self.manual_swatch_map.clear()
         self.preview_cache.clear()
         self.pending_key = None
         self.preview.setText("Open an image or folder")
@@ -636,7 +670,11 @@ class ExifFrameQt(QMainWindow):
     def select_index(self, idx: int) -> None:
         if idx < 0 or idx >= len(self.image_paths):
             return
+        prev = self.current_image_path()
+        if prev:
+            self._persist_manual_colors(prev)
         self.current_index = idx
+        self._load_manual_colors(self.image_paths[idx])
         self.update_selection_label()
         self.update_exif_panel()
         self.schedule_preview()
@@ -722,7 +760,7 @@ class ExifFrameQt(QMainWindow):
             self.camera_meta_gap.value(),
             self.swatch_box_height.value(),
             self.swatch_box_width.value(),
-            self._manual_color_tuples(),
+            self._manual_color_tuples(src),
         )
         worker.signals.done.connect(self._preview_done)
         worker.signals.error.connect(lambda msg: (self.preview.setText(f"Preview error: {msg}"), self.export_progress.setValue(0)))
@@ -756,7 +794,7 @@ class ExifFrameQt(QMainWindow):
             "camera_gap": self.camera_meta_gap.value(),
             "swatch_box_height": self.swatch_box_height.value(),
             "swatch_box_width": self.swatch_box_width.value(),
-            "manual_colors": self._manual_color_tuples(),
+            "manual_colors": self._manual_color_tuples(src),
         }
         payload = f"{src}|{src.stat().st_mtime_ns}|{asdict(cfg)}|{extra}"
         return hashlib.sha1(payload.encode()).hexdigest()
@@ -808,7 +846,7 @@ class ExifFrameQt(QMainWindow):
                 self.camera_meta_gap.value(),
                 self.swatch_box_height.value(),
                 self.swatch_box_width.value(),
-                forced_colors=self._manual_color_tuples(),
+                forced_colors=self._manual_color_tuples(self.image_paths[0]),
             )
             self.export_progress.setValue(100)
             QMessageBox.information(self, "Done", f"Exported:\n{out}")
@@ -832,7 +870,7 @@ class ExifFrameQt(QMainWindow):
                     self.camera_meta_gap.value(),
                     self.swatch_box_height.value(),
                     self.swatch_box_width.value(),
-                    forced_colors=self._manual_color_tuples(),
+                    forced_colors=self._manual_color_tuples(src),
                 )
             except Exception as exc:
                 failures.append(f"{src.name}: {exc}")
