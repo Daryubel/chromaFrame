@@ -163,6 +163,42 @@ def render_with_options(
     source.filename = str(input_path)
     width, height = source.size
 
+    if style == "float":
+        opts = style_options or {}
+        canvas_float = source.copy()
+        draw_f = ef.ImageDraw.Draw(canvas_float)
+        info_font_f = ef.load_font(cfg.font_path, cfg.info_size)
+        meta_font_f = ef.load_font(cfg.font_path, cfg.meta_size)
+        logo_size = max(12, int(opts.get("plateau_logo_size", cfg.info_size)))
+        logo_font_f = ef.load_font(cfg.font_path, logo_size)
+        exif_f = ef.get_exif_data(source)
+        make_f = str(ef._decode_if_bytes(ef._first_present(exif_f, "Make") or "")).strip()
+        model_f = str(ef._decode_if_bytes(ef._first_present(exif_f, "Model", "LensModel") or "")).strip()
+        date_f = ef._format_date(ef._first_present(exif_f, "DateTimeOriginal", "CreateDate", "DateTime")) or "--"
+        focal_f = ef._to_float_fraction(ef._first_present(exif_f, "FocalLength", "FocalLengthIn35mmFilm"))
+        fnum_f = ef._to_float_fraction(ef._first_present(exif_f, "FNumber", "ApertureValue"))
+        exp_f = ef._first_present(exif_f, "ExposureTime", "ShutterSpeedValue")
+        iso_f = ef._decode_if_bytes(ef._first_present(exif_f, "ISOSpeedRatings", "PhotographicSensitivity", "ISO"))
+        specs_f = "    ".join([f"{focal_f:.0f}mm" if focal_f else "--mm", f"f/{fnum_f:.1f}" if fnum_f else "f/--", ef._format_exposure(exp_f), f"ISO{iso_f}" if iso_f else "ISO--"])
+        overlay_h = max(40, int(opts.get("float_display_height", max(80, int(height * 0.14)))))
+        left_pad = int(opts.get("plateau_left_padding", 20))
+        divider_gap = int(opts.get("float_divider_gap", 24))
+        y0 = height - overlay_h
+        logo_text = (make_f or "CAMERA").upper()
+        logo_bbox = draw_f.textbbox((0, 0), logo_text, font=logo_font_f)
+        logo_h = logo_bbox[3] - logo_bbox[1]
+        logo_y = y0 + (overlay_h - logo_h) // 2
+        logo_x = left_pad
+        draw_f.text((logo_x, logo_y), logo_text, fill=(245, 245, 245), font=logo_font_f)
+        divider_x = logo_x + (logo_bbox[2] - logo_bbox[0]) + divider_gap
+        draw_f.line((divider_x, y0 + overlay_h * 0.25, divider_x, y0 + overlay_h * 0.75), fill=(255, 255, 255), width=2)
+        text_x = divider_x + divider_gap
+        draw_f.text((text_x, y0 + int(overlay_h * 0.22)), f"{photographer or 'Unknown'}    {date_f}", fill=(238, 238, 238), font=info_font_f)
+        draw_f.text((text_x, y0 + int(overlay_h * 0.56)), f"{model_f or '--'}    {specs_f}", fill=(220, 220, 220), font=meta_font_f)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        canvas_float.save(output_path, quality=95)
+        return
+
     scale = 1.0
     if preview_max_pixels and preview_max_pixels > 0:
         output_pixels = (width + cfg.side_margin * 2) * (height + cfg.top_margin + cfg.bottom_margin)
@@ -281,6 +317,7 @@ def render_with_options(
             ("ISO", str(iso) if iso else "--"),
             ("PhotoBy", photographer or "--"),
             ("ShotOn", model or make or "--"),
+            ("Logo", (make or "CAMERA").upper()),
         ]
         for k, v in reversed(lines):
             key_bbox = draw.textbbox((0, 0), k, font=meta_font)
@@ -293,7 +330,6 @@ def render_with_options(
             draw.text((x0, y), k, fill=(145, 145, 145), font=meta_font)
             draw.text((x0 + kw + ev_gap, y), v, fill=(35, 35, 35), font=val_font)
             y -= row_gap
-        draw.text((x_mid - 60, y - 40), (make or "CAMERA").upper(), fill=(20, 20, 20), font=title_font)
         output_path.parent.mkdir(parents=True, exist_ok=True)
         canvas.save(output_path, quality=95)
         return
@@ -388,9 +424,15 @@ def render_with_options(
         model_font = ef.load_font(cfg.font_path, cfg.info_size)
         if opts.get("plateau_model_bold"):
             model_font = ef.load_font(cfg.font_path, cfg.info_size + 2)
-        model_y = y0 + int(bar_h * 0.20)
-        draw_p.text((mid_x, model_y), model or camera, fill=(25, 25, 25), font=model_font, anchor="ra")
-        draw_p.text((mid_x, model_y + cfg.info_size + model_gap), specs, fill=(30, 30, 30), font=meta_font, anchor="ra")
+        model_text = model or camera
+        model_bbox = draw_p.textbbox((0, 0), model_text, font=model_font)
+        specs_bbox = draw_p.textbbox((0, 0), specs, font=meta_font)
+        model_h = model_bbox[3] - model_bbox[1]
+        specs_h = specs_bbox[3] - specs_bbox[1]
+        block_h = model_h + model_gap + specs_h
+        model_y = y0 + (bar_h - block_h) // 2
+        draw_p.text((mid_x, model_y), model_text, fill=(25, 25, 25), font=model_font, anchor="ra")
+        draw_p.text((mid_x, model_y + model_h + model_gap), specs, fill=(30, 30, 30), font=meta_font, anchor="ra")
         focal_txt = f"{focal_length:.0f}mm" if focal_length else "--mm"
         draw_p.text((mid_x + focal_gap, y0 + bar_h // 2), focal_txt, fill=(22, 22, 22), font=ef.load_font(cfg.font_path, cfg.meta_size * 2), anchor="lm")
         by_font = ef.load_font(cfg.font_path, cfg.info_size + 2 if opts.get("plateau_photographer_bold") else cfg.info_size)
@@ -425,6 +467,8 @@ class ExifFrameQt(QMainWindow):
         self.base_preview_pixmap = QPixmap()
         self._pan_last = None
         self.current_style = "chroma"
+        self.style_states: dict[str, dict] = {}
+        self._applying_style_state = False
 
         self.pool = QThreadPool.globalInstance()
         self.preview_timer = QTimer(self)
@@ -535,18 +579,18 @@ class ExifFrameQt(QMainWindow):
         self.text_align.addItems(["left", "center", "right"])
         self.text_align.setCurrentText("left")
         self.text_align.setVisible(False)
-        self.plateau_left_padding = self._spin(0, 500, 24)
-        self.plateau_logo_size = self._spin(8, 200, 42)
-        self.plateau_mid_x = self._spin(0, 8000, 1200)
-        self.plateau_model_exif_gap = self._spin(0, 120, 10)
-        self.plateau_model_focal_gap = self._spin(0, 400, 30)
+        plateau_left_row, self.plateau_left_padding = self._slider_spin(0, 500, 24)
+        plateau_logo_row, self.plateau_logo_size = self._slider_spin(8, 200, 42)
+        plateau_mid_row, self.plateau_mid_x = self._slider_spin(0, 8000, 1200)
+        plateau_exif_gap_row, self.plateau_model_exif_gap = self._slider_spin(0, 120, 10)
+        plateau_focal_gap_row, self.plateau_model_focal_gap = self._slider_spin(0, 400, 30)
         self.plateau_photographer_bold = QCheckBox("Bold photographer")
         self.plateau_model_bold = QCheckBox("Bold camera model")
-        self.float_display_height = self._spin(40, 1200, 120)
-        self.float_divider_gap = self._spin(2, 120, 24)
-        self.explicit_row_gap = self._spin(8, 220, 36)
-        self.explicit_entry_gap = self._spin(20, 300, 120)
-        self.explicit_bottom_gap = self._spin(10, 500, 64)
+        float_height_row, self.float_display_height = self._slider_spin(40, 1200, 120)
+        float_divider_row, self.float_divider_gap = self._slider_spin(2, 120, 24)
+        explicit_row_gap_row, self.explicit_row_gap = self._slider_spin(8, 220, 36)
+        explicit_entry_gap_row, self.explicit_entry_gap = self._slider_spin(20, 300, 120)
+        explicit_bottom_gap_row, self.explicit_bottom_gap = self._slider_spin(10, 500, 64)
         self.font_path = QLineEdit("")
         self.export_template = QLineEdit("${filename}_framed")
         self.dump_exif = QCheckBox("Dump EXIF")
@@ -574,18 +618,18 @@ class ExifFrameQt(QMainWindow):
         form.addRow("Swatch box height", swatch_box_row)
         form.addRow("Swatch box width", swatch_width_row)
         form.addRow("Text alignment", self.text_align)
-        form.addRow("Plateau left padding", self.plateau_left_padding)
-        form.addRow("Plateau logo size", self.plateau_logo_size)
-        form.addRow("Plateau center X", self.plateau_mid_x)
-        form.addRow("Plateau model-exif gap", self.plateau_model_exif_gap)
-        form.addRow("Plateau model-focal gap", self.plateau_model_focal_gap)
+        form.addRow("Plateau left padding", plateau_left_row)
+        form.addRow("Plateau logo size", plateau_logo_row)
+        form.addRow("Plateau center X", plateau_mid_row)
+        form.addRow("Plateau model-exif gap", plateau_exif_gap_row)
+        form.addRow("Plateau model-focal gap", plateau_focal_gap_row)
         form.addRow("", self.plateau_photographer_bold)
         form.addRow("", self.plateau_model_bold)
-        form.addRow("Float display height", self.float_display_height)
-        form.addRow("Float divider gap", self.float_divider_gap)
-        form.addRow("Explicit row gap", self.explicit_row_gap)
-        form.addRow("Explicit entry-value gap", self.explicit_entry_gap)
-        form.addRow("Explicit bottom gap", self.explicit_bottom_gap)
+        form.addRow("Float display height", float_height_row)
+        form.addRow("Float divider gap", float_divider_row)
+        form.addRow("Explicit row gap", explicit_row_gap_row)
+        form.addRow("Explicit entry-value gap", explicit_entry_gap_row)
+        form.addRow("Explicit bottom gap", explicit_bottom_gap_row)
         form.addRow("Font path", self.font_path)
         form.addRow("Export template", self.export_template)
         form.addRow("", help_btn)
@@ -617,9 +661,10 @@ class ExifFrameQt(QMainWindow):
         self._update_manual_swatch_ui()
         self.chroma_only_widgets = [swatch_count_row, swatch_hex_row, swatch_box_row, swatch_width_row, self.manual_swatch_enable, self.manual_swatch_wrap]
         self.simple_only_widgets = [self.text_align]
-        self.plateau_only_widgets = [self.plateau_left_padding, self.plateau_logo_size, self.plateau_mid_x, self.plateau_model_exif_gap, self.plateau_model_focal_gap, self.plateau_photographer_bold, self.plateau_model_bold]
-        self.float_only_widgets = [self.float_display_height, self.float_divider_gap]
-        self.explicit_only_widgets = [self.explicit_row_gap, self.explicit_entry_gap, self.explicit_bottom_gap]
+        self.plateau_only_widgets = [plateau_left_row, plateau_logo_row, plateau_mid_row, plateau_exif_gap_row, plateau_focal_gap_row, self.plateau_photographer_bold, self.plateau_model_bold]
+        self.float_only_widgets = [float_height_row, float_divider_row]
+        self.explicit_only_widgets = [explicit_row_gap_row, explicit_entry_gap_row, explicit_bottom_gap_row]
+        self.margin_widgets = [top_margin_row, bottom_margin_row, side_margin_row]
 
         settings_layout.addLayout(form)
         settings_body.setLayout(settings_layout)
@@ -705,14 +750,18 @@ class ExifFrameQt(QMainWindow):
         return row, spin
 
     def _connect_changed(self, widget: QWidget) -> None:
+        def _maybe_schedule(*_args):
+            if not self._applying_style_state:
+                self.schedule_preview()
+
         if isinstance(widget, QLineEdit):
-            widget.textChanged.connect(self.schedule_preview)
+            widget.textChanged.connect(_maybe_schedule)
         elif isinstance(widget, QSpinBox):
-            widget.valueChanged.connect(self.schedule_preview)
+            widget.valueChanged.connect(_maybe_schedule)
         elif isinstance(widget, QComboBox):
-            widget.currentTextChanged.connect(self.schedule_preview)
+            widget.currentTextChanged.connect(_maybe_schedule)
         elif isinstance(widget, QCheckBox):
-            widget.stateChanged.connect(self.schedule_preview)
+            widget.stateChanged.connect(_maybe_schedule)
 
     def pick_color(self) -> None:
         color = QColorDialog.getColor()
@@ -854,6 +903,55 @@ class ExifFrameQt(QMainWindow):
             "explicit_bottom_gap": self.explicit_bottom_gap.value(),
         }
 
+    def _capture_style_state(self) -> dict:
+        return {
+            "top_margin": self.top_margin.value(),
+            "bottom_margin": self.bottom_margin.value(),
+            "side_margin": self.side_margin.value(),
+            "title_size": self.title_size.value(),
+            "subtitle_size": self.subtitle_size.value(),
+            "info_size": self.info_size.value(),
+            "meta_size": self.meta_size.value(),
+            "swatch_count": self.swatch_count.value(),
+            "swatch_label_size": self.swatch_label_size.value(),
+            "swatch_box_height": self.swatch_box_height.value(),
+            "swatch_box_width": self.swatch_box_width.value(),
+            "title_gap": self.title_subtitle_gap.value(),
+            "camera_gap": self.camera_meta_gap.value(),
+            "text_align": self.text_align.currentText(),
+            **self._style_options(),
+        }
+
+    def _apply_style_state(self, state: dict) -> None:
+        self._applying_style_state = True
+        self.top_margin.setValue(int(state.get("top_margin", self.top_margin.value())))
+        self.bottom_margin.setValue(int(state.get("bottom_margin", self.bottom_margin.value())))
+        self.side_margin.setValue(int(state.get("side_margin", self.side_margin.value())))
+        self.title_size.setValue(int(state.get("title_size", self.title_size.value())))
+        self.subtitle_size.setValue(int(state.get("subtitle_size", self.subtitle_size.value())))
+        self.info_size.setValue(int(state.get("info_size", self.info_size.value())))
+        self.meta_size.setValue(int(state.get("meta_size", self.meta_size.value())))
+        self.swatch_count.setValue(int(state.get("swatch_count", self.swatch_count.value())))
+        self.swatch_label_size.setValue(int(state.get("swatch_label_size", self.swatch_label_size.value())))
+        self.swatch_box_height.setValue(int(state.get("swatch_box_height", self.swatch_box_height.value())))
+        self.swatch_box_width.setValue(int(state.get("swatch_box_width", self.swatch_box_width.value())))
+        self.title_subtitle_gap.setValue(int(state.get("title_gap", self.title_subtitle_gap.value())))
+        self.camera_meta_gap.setValue(int(state.get("camera_gap", self.camera_meta_gap.value())))
+        self.text_align.setCurrentText(str(state.get("text_align", self.text_align.currentText())))
+        self.plateau_left_padding.setValue(int(state.get("plateau_left_padding", self.plateau_left_padding.value())))
+        self.plateau_logo_size.setValue(int(state.get("plateau_logo_size", self.plateau_logo_size.value())))
+        self.plateau_mid_x.setValue(int(state.get("plateau_mid_x", self.plateau_mid_x.value())))
+        self.plateau_model_exif_gap.setValue(int(state.get("plateau_model_exif_gap", self.plateau_model_exif_gap.value())))
+        self.plateau_model_focal_gap.setValue(int(state.get("plateau_model_focal_gap", self.plateau_model_focal_gap.value())))
+        self.plateau_photographer_bold.setChecked(bool(state.get("plateau_photographer_bold", self.plateau_photographer_bold.isChecked())))
+        self.plateau_model_bold.setChecked(bool(state.get("plateau_model_bold", self.plateau_model_bold.isChecked())))
+        self.float_display_height.setValue(int(state.get("float_display_height", self.float_display_height.value())))
+        self.float_divider_gap.setValue(int(state.get("float_divider_gap", self.float_divider_gap.value())))
+        self.explicit_row_gap.setValue(int(state.get("explicit_row_gap", self.explicit_row_gap.value())))
+        self.explicit_entry_gap.setValue(int(state.get("explicit_entry_value_gap", self.explicit_entry_gap.value())))
+        self.explicit_bottom_gap.setValue(int(state.get("explicit_bottom_gap", self.explicit_bottom_gap.value())))
+        self._applying_style_state = False
+
     def template_help(self) -> None:
         QMessageBox.information(
             self,
@@ -863,7 +961,11 @@ class ExifFrameQt(QMainWindow):
         )
 
     def on_style_changed(self, style: str) -> None:
+        if hasattr(self, "current_style") and self.current_style:
+            self.style_states[self.current_style] = self._capture_style_state()
         self.current_style = style if style in {"chroma", "simple", "plateau", "float", "explicit"} else "chroma"
+        if self.current_style in self.style_states:
+            self._apply_style_state(self.style_states[self.current_style])
         is_chroma = self.current_style == "chroma"
         for w in self.chroma_only_widgets:
             w.setVisible(is_chroma)
@@ -877,6 +979,8 @@ class ExifFrameQt(QMainWindow):
             w.setVisible(self.current_style == "float")
         for w in self.explicit_only_widgets:
             w.setVisible(self.current_style == "explicit")
+        for w in self.margin_widgets:
+            w.setVisible(self.current_style != "float")
         self._update_manual_swatch_ui()
         self.schedule_preview()
 
