@@ -20,6 +20,7 @@ try:
     from PyQt6.QtWidgets import (
         QApplication,
         QCheckBox,
+        QComboBox,
         QColorDialog,
         QFileDialog,
         QFormLayout,
@@ -49,6 +50,7 @@ except ImportError:
     from PyQt5.QtWidgets import (
         QApplication,
         QCheckBox,
+        QComboBox,
         QColorDialog,
         QFileDialog,
         QFormLayout,
@@ -94,6 +96,8 @@ class RenderWorker(QRunnable):
         swatch_height: int,
         swatch_width: int,
         forced_colors: list[tuple[int, int, int]] | None = None,
+        style: str = "chroma",
+        text_align: str = "left",
     ):
         super().__init__()
         self.key = key
@@ -104,6 +108,8 @@ class RenderWorker(QRunnable):
         self.swatch_height = swatch_height
         self.swatch_width = swatch_width
         self.forced_colors = forced_colors
+        self.style = style
+        self.text_align = text_align
         self.signals = WorkerSignals()
 
     def run(self) -> None:
@@ -119,6 +125,8 @@ class RenderWorker(QRunnable):
                 self.swatch_height,
                 self.swatch_width,
                 forced_colors=self.forced_colors,
+                style=self.style,
+                text_align=self.text_align,
                 preview_max_pixels=24_000_000,
             )
             self.signals.done.emit(self.key, str(out_path))
@@ -135,6 +143,8 @@ def render_with_options(
     swatch_height: int,
     swatch_width: int,
     forced_colors: list[tuple[int, int, int]] | None = None,
+    style: str = "chroma",
+    text_align: str = "left",
     preview_max_pixels: int | None = None,
 ) -> None:
     from PIL import Image
@@ -226,22 +236,32 @@ def render_with_options(
         subtitle_h = subtitle_bbox[3] - subtitle_bbox[1]
     top_block_h = title_h + (title_gap if subtitle else 0) + subtitle_h
     top_y = max(0, int((cfg.top_margin - top_block_h) / 2))
-    draw.text((pad_x, top_y), cfg.title, fill=(20, 20, 20), font=title_font)
+    top_text_x = pad_x
+    if text_align == "center":
+        top_text_x = max(pad_x, int((canvas_w - (title_bbox[2] - title_bbox[0])) / 2))
+    elif text_align == "right":
+        top_text_x = canvas_w - cfg.side_margin - (title_bbox[2] - title_bbox[0])
+    draw.text((top_text_x, top_y), cfg.title, fill=(20, 20, 20), font=title_font)
     if subtitle:
-        draw.text((pad_x, top_y + title_h + title_gap), subtitle, fill=(120, 120, 120), font=subtitle_font)
+        sub_bbox = draw.textbbox((0, 0), subtitle, font=subtitle_font)
+        sub_w = sub_bbox[2] - sub_bbox[0]
+        sub_x = pad_x if text_align == "left" else (max(pad_x, int((canvas_w - sub_w) / 2)) if text_align == "center" else canvas_w - cfg.side_margin - sub_w)
+        draw.text((sub_x, top_y + title_h + title_gap), subtitle, fill=(120, 120, 120), font=subtitle_font)
 
     bottom_margin_start = cfg.top_margin + height
     swatch_w = max(80, min(width, swatch_width))
     swatch_h = max(8, swatch_height)
-    swatch_label_bbox = draw.textbbox((0, 0), "#FFFFFF", font=swatch_font)
-    swatch_label_h = swatch_label_bbox[3] - swatch_label_bbox[1]
-    swatch_block_h = swatch_h + 6 + swatch_label_h
-    colors = ef.dominant_colors(source, n_colors=cfg.swatch_count)
-    if forced_colors:
-        for i, color in enumerate(forced_colors[: len(colors)]):
-            colors[i] = color
-    swatch_y = bottom_margin_start + max(0, int((cfg.bottom_margin - swatch_block_h) / 2))
-    ef.draw_color_swatches(draw, colors, pad_x, swatch_y, swatch_w, swatch_h, swatch_font)
+    swatch_block_h = 0
+    if style == "chroma":
+        swatch_label_bbox = draw.textbbox((0, 0), "#FFFFFF", font=swatch_font)
+        swatch_label_h = swatch_label_bbox[3] - swatch_label_bbox[1]
+        swatch_block_h = swatch_h + 6 + swatch_label_h
+        colors = ef.dominant_colors(source, n_colors=cfg.swatch_count)
+        if forced_colors:
+            for i, color in enumerate(forced_colors[: len(colors)]):
+                colors[i] = color
+        swatch_y = bottom_margin_start + max(0, int((cfg.bottom_margin - swatch_block_h) / 2))
+        ef.draw_color_swatches(draw, colors, pad_x, swatch_y, swatch_w, swatch_h, swatch_font)
 
     right_x = canvas_w - cfg.side_margin
     specs_bbox = draw.textbbox((0, 0), specs, font=meta_font)
@@ -255,15 +275,27 @@ def render_with_options(
         gps_h = gps_bbox[3] - gps_bbox[1]
         text_block_h += 8 + gps_h
     start_y = bottom_margin_start + max(0, int((cfg.bottom_margin - text_block_h) / 2))
-    draw.text((right_x - camera_w, start_y), camera, fill=(20, 20, 20), font=info_font)
+    if style == "simple" and text_align in {"left", "center"}:
+        camera_x = pad_x if text_align == "left" else max(pad_x, int((canvas_w - camera_w) / 2))
+    else:
+        camera_x = right_x - camera_w
+    draw.text((camera_x, start_y), camera, fill=(20, 20, 20), font=info_font)
     specs_y = start_y + camera_h + camera_gap
     specs_w = specs_bbox[2] - specs_bbox[0]
-    draw.text((right_x - specs_w, specs_y), specs, fill=(120, 120, 120), font=meta_font)
+    if style == "simple" and text_align in {"left", "center"}:
+        specs_x = pad_x if text_align == "left" else max(pad_x, int((canvas_w - specs_w) / 2))
+    else:
+        specs_x = right_x - specs_w
+    draw.text((specs_x, specs_y), specs, fill=(120, 120, 120), font=meta_font)
     if gps_line:
         gps_y = specs_y + specs_h + 8
         gps_bbox = draw.textbbox((0, 0), gps_line, font=meta_font)
         gps_w = gps_bbox[2] - gps_bbox[0]
-        draw.text((right_x - gps_w, gps_y), gps_line, fill=(120, 120, 120), font=meta_font)
+        if style == "simple" and text_align in {"left", "center"}:
+            gps_x = pad_x if text_align == "left" else max(pad_x, int((canvas_w - gps_w) / 2))
+        else:
+            gps_x = right_x - gps_w
+        draw.text((gps_x, gps_y), gps_line, fill=(120, 120, 120), font=meta_font)
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     canvas.save(output_path, quality=95)
@@ -285,6 +317,7 @@ class ExifFrameQt(QMainWindow):
         self.preview_zoom = 1.0
         self.base_preview_pixmap = QPixmap()
         self._pan_last = None
+        self.current_style = "chroma"
 
         self.pool = QThreadPool.globalInstance()
         self.preview_timer = QTimer(self)
@@ -301,6 +334,7 @@ class ExifFrameQt(QMainWindow):
             ("Open Image", self.open_image),
             ("Open Folder", self.open_folder),
             ("Close", self.clear_images),
+            ("Switch Style", self.switch_style),
             ("Apply To All", self.apply_to_all),
             ("Export", self.export_images),
         ]:
@@ -333,6 +367,7 @@ class ExifFrameQt(QMainWindow):
         self.preview_scroll = QScrollArea()
         self.preview_scroll.setWidgetResizable(False)
         self.preview_scroll.setWidget(self.preview)
+        self.preview_scroll.setAlignment(_align_center())
         self.preview_scroll.viewport().wheelEvent = self._on_preview_wheel  # type: ignore[method-assign]
         preview_splitter.addWidget(self.preview_scroll)
 
@@ -382,6 +417,10 @@ class ExifFrameQt(QMainWindow):
         camera_gap_row, self.camera_meta_gap = self._slider_spin(0, 200, 12)
         swatch_box_row, self.swatch_box_height = self._slider_spin(8, 300, 40)
         swatch_width_row, self.swatch_box_width = self._slider_spin(80, 5000, 520)
+        self.text_align = QComboBox()
+        self.text_align.addItems(["left", "center", "right"])
+        self.text_align.setCurrentText("left")
+        self.text_align.setVisible(False)
         self.font_path = QLineEdit("")
         self.export_template = QLineEdit("${filename}_framed")
         self.dump_exif = QCheckBox("Dump EXIF")
@@ -407,6 +446,7 @@ class ExifFrameQt(QMainWindow):
         form.addRow("Camera-Meta gap", camera_gap_row)
         form.addRow("Swatch box height", swatch_box_row)
         form.addRow("Swatch box width", swatch_width_row)
+        form.addRow("Text alignment", self.text_align)
         form.addRow("Font path", self.font_path)
         form.addRow("Export template", self.export_template)
         form.addRow("", help_btn)
@@ -436,6 +476,7 @@ class ExifFrameQt(QMainWindow):
         manual_layout.addWidget(self.manual_hint)
         settings_layout.addWidget(self.manual_swatch_wrap)
         self._update_manual_swatch_ui()
+        self.chroma_only_widgets = [swatch_count_row, swatch_hex_row, swatch_box_row, swatch_width_row, self.manual_swatch_enable, self.manual_swatch_wrap]
 
         settings_layout.addLayout(form)
         settings_body.setLayout(settings_layout)
@@ -477,6 +518,7 @@ class ExifFrameQt(QMainWindow):
             self.camera_meta_gap,
             self.swatch_box_height,
             self.swatch_box_width,
+            self.text_align,
             self.font_path,
             self.dump_exif,
             self.manual_swatch_enable,
@@ -510,6 +552,8 @@ class ExifFrameQt(QMainWindow):
             widget.textChanged.connect(self.schedule_preview)
         elif isinstance(widget, QSpinBox):
             widget.valueChanged.connect(self.schedule_preview)
+        elif isinstance(widget, QComboBox):
+            widget.currentTextChanged.connect(self.schedule_preview)
         elif isinstance(widget, QCheckBox):
             widget.stateChanged.connect(self.schedule_preview)
 
@@ -519,6 +563,10 @@ class ExifFrameQt(QMainWindow):
             self.frame_color_edit.setText(color.name())
 
     def _update_manual_swatch_ui(self) -> None:
+        if self.current_style != "chroma":
+            self.manual_swatch_wrap.setVisible(False)
+            self.active_pick_index = None
+            return
         enabled = self.manual_swatch_enable.isChecked()
         count = self.swatch_count.value()
         self.manual_swatch_wrap.setVisible(enabled)
@@ -530,8 +578,10 @@ class ExifFrameQt(QMainWindow):
         if not enabled:
             self.active_pick_index = None
         p = self.current_image_path()
-        if enabled and p and p not in self.manual_swatch_map:
-            self.manual_swatch_map[p] = self._auto_swatch_hexes(p, count)
+        if enabled and p:
+            existing = self.manual_swatch_map.get(p, [])
+            if (not existing) or all(c.upper() == "#000000" for c in existing[:count]):
+                self.manual_swatch_map[p] = self._auto_swatch_hexes(p, count)
         if p:
             self._load_manual_colors(p)
 
@@ -620,7 +670,7 @@ class ExifFrameQt(QMainWindow):
             return ["#000000"] * count
 
     def _manual_color_tuples(self, img_path: Path | None = None) -> list[tuple[int, int, int]] | None:
-        if not self.manual_swatch_enable.isChecked():
+        if self.current_style != "chroma" or not self.manual_swatch_enable.isChecked():
             return None
         if img_path is None:
             img_path = self.current_image_path()
@@ -638,6 +688,18 @@ class ExifFrameQt(QMainWindow):
             "Use placeholders like ${filename}, ${stem}, ${ext}, ${make}, ${model}, ${datetime}, ${iso}.\n"
             "You can also use any EXIF key, e.g. ${DateTimeOriginal}.",
         )
+
+    def switch_style(self) -> None:
+        self.current_style = "simple" if self.current_style == "chroma" else "chroma"
+        is_chroma = self.current_style == "chroma"
+        for w in self.chroma_only_widgets:
+            w.setVisible(is_chroma)
+        if not is_chroma:
+            self.manual_swatch_enable.setChecked(False)
+        self.text_align.setVisible(not is_chroma)
+        self._update_manual_swatch_ui()
+        self.schedule_preview()
+        QMessageBox.information(self, "Style", f"Switched to '{self.current_style}' style.")
 
     def open_image(self) -> None:
         file_path, _ = QFileDialog.getOpenFileName(self, "Open image", "", "JPEG (*.jpg *.jpeg)")
@@ -807,6 +869,8 @@ class ExifFrameQt(QMainWindow):
             self.swatch_box_height.value(),
             self.swatch_box_width.value(),
             self._manual_color_tuples(src),
+            style=self.current_style,
+            text_align=self.text_align.currentText(),
         )
         worker.signals.done.connect(self._preview_done)
         worker.signals.error.connect(lambda msg: (self.preview.setText(f"Preview error: {msg}"), self.export_progress.setValue(0)))
@@ -852,6 +916,8 @@ class ExifFrameQt(QMainWindow):
             "swatch_box_height": self.swatch_box_height.value(),
             "swatch_box_width": self.swatch_box_width.value(),
             "manual_colors": self._manual_color_tuples(src),
+            "style": self.current_style,
+            "text_align": self.text_align.currentText(),
         }
         payload = f"{src}|{src.stat().st_mtime_ns}|{asdict(cfg)}|{extra}"
         return hashlib.sha1(payload.encode()).hexdigest()
@@ -904,6 +970,8 @@ class ExifFrameQt(QMainWindow):
                 self.swatch_box_height.value(),
                 self.swatch_box_width.value(),
                 forced_colors=self._manual_color_tuples(self.image_paths[0]),
+                style=self.current_style,
+                text_align=self.text_align.currentText(),
             )
             self.export_progress.setValue(100)
             QMessageBox.information(self, "Done", f"Exported:\n{out}")
@@ -928,6 +996,8 @@ class ExifFrameQt(QMainWindow):
                     self.swatch_box_height.value(),
                     self.swatch_box_width.value(),
                     forced_colors=self._manual_color_tuples(src),
+                    style=self.current_style,
+                    text_align=self.text_align.currentText(),
                 )
             except Exception as exc:
                 failures.append(f"{src.name}: {exc}")

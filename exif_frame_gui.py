@@ -216,6 +216,10 @@ class ExifFrameGUI:
             self.manual_swatch_wrap.pack_forget()
             self.active_pick_index = None
         if enabled and self.current_image_path:
+            existing = self.manual_swatch_map.get(self.current_image_path, [])
+            count = self.vars["swatch_count"].get()
+            if (not existing) or all(c.upper() == "#000000" for c in existing[:count]):
+                self.manual_swatch_map[self.current_image_path] = self._auto_swatch_hexes(self.current_image_path, count)
             self._load_manual_colors(self.current_image_path)
         count = self.vars["swatch_count"].get()
         for i, child in enumerate(self.manual_swatch_wrap.winfo_children()[:-1]):
