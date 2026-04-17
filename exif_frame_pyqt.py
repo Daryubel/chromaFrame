@@ -98,6 +98,7 @@ class RenderWorker(QRunnable):
         forced_colors: list[tuple[int, int, int]] | None = None,
         style: str = "chroma",
         text_align: str = "left",
+        photographer: str | None = None,
     ):
         super().__init__()
         self.key = key
@@ -110,6 +111,7 @@ class RenderWorker(QRunnable):
         self.forced_colors = forced_colors
         self.style = style
         self.text_align = text_align
+        self.photographer = photographer
         self.signals = WorkerSignals()
 
     def run(self) -> None:
@@ -127,6 +129,7 @@ class RenderWorker(QRunnable):
                 forced_colors=self.forced_colors,
                 style=self.style,
                 text_align=self.text_align,
+                photographer=self.photographer,
                 preview_max_pixels=24_000_000,
             )
             self.signals.done.emit(self.key, str(out_path))
@@ -145,6 +148,7 @@ def render_with_options(
     forced_colors: list[tuple[int, int, int]] | None = None,
     style: str = "chroma",
     text_align: str = "left",
+    photographer: str | None = None,
     preview_max_pixels: int | None = None,
 ) -> None:
     from PIL import Image
@@ -207,7 +211,12 @@ def render_with_options(
     model = str(ef._decode_if_bytes(ef._first_present(exif, "Model", "LensModel") or "")).strip()
     camera = f"{make} {model}".strip() or "Unknown Camera"
     date_value = ef._format_date(ef._first_present(exif, "DateTimeOriginal", "CreateDate", "DateTime"))
-    subtitle = cfg.subtitle if cfg.subtitle else (f"PHOTOGRAPHED IN : {date_value}" if date_value else "")
+    if cfg.subtitle:
+        subtitle = cfg.subtitle
+    else:
+        subtitle = f"PHOTOGRAPHED IN : {date_value}" if date_value else ""
+        if photographer and style in {"chroma", "simple"}:
+            subtitle = f"{subtitle}  by {photographer}" if subtitle else f"by {photographer}"
 
     gps = exif.get("GPSInfo", {}) if isinstance(exif.get("GPSInfo"), dict) else {}
     lat = ef._format_gps_coord(gps.get("GPSLatitude"), gps.get("GPSLatitudeRef"), "lat") if gps else None
@@ -228,6 +237,42 @@ def render_with_options(
     )
 
     pad_x = cfg.side_margin
+    if style == "float":
+        overlay_h = max(80, int(height * 0.14))
+        y0 = cfg.top_margin + height - overlay_h
+        draw.rectangle((cfg.side_margin, y0, cfg.side_margin + width, cfg.top_margin + height), fill=(10, 10, 10))
+        logo_text = (make or "CAMERA").upper()
+        draw.text((cfg.side_margin + 18, y0 + 22), logo_text, fill=(240, 240, 240), font=info_font)
+        draw.text((cfg.side_margin + max(180, int(width * 0.32)), y0 + 18), f"Photo by {photographer or 'Unknown'}", fill=(235, 235, 235), font=info_font)
+        draw.text((cfg.side_margin + max(180, int(width * 0.32)), y0 + 56), f"{date_value or '--'}    {specs}", fill=(210, 210, 210), font=meta_font)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        canvas.save(output_path, quality=95)
+        return
+
+    if style == "explicit":
+        panel_w = max(260, int(width * 0.28))
+        draw.rectangle((canvas_w - panel_w, 0, canvas_w, canvas_h), fill=(235, 235, 235))
+        x0 = canvas_w - panel_w + 24
+        y = max(32, cfg.top_margin // 2)
+        lines = [
+            ("TakenAt", date_value or "--"),
+            ("Location", gps_line or "--"),
+            ("Focal", f"{focal_length:.0f}mm" if focal_length else "--"),
+            ("Aperture", f"f/{f_number:.1f}" if f_number else "--"),
+            ("Shutter", ef._format_exposure(exposure)),
+            ("ISO", str(iso) if iso else "--"),
+            ("PhotoBy", photographer or "--"),
+            ("ShotOn", model or make or "--"),
+        ]
+        for k, v in lines:
+            draw.text((x0, y), k, fill=(145, 145, 145), font=meta_font)
+            draw.text((x0 + 120, y), v, fill=(35, 35, 35), font=info_font if k in {"PhotoBy", "ShotOn"} else meta_font)
+            y += int(cfg.meta_size * 1.5)
+        draw.text((x0, canvas_h - 90), (make or "CAMERA").upper(), fill=(20, 20, 20), font=title_font)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        canvas.save(output_path, quality=95)
+        return
+
     title_bbox = draw.textbbox((0, 0), cfg.title, font=title_font)
     title_h = title_bbox[3] - title_bbox[1]
     subtitle_h = 0
@@ -297,6 +342,19 @@ def render_with_options(
             gps_x = right_x - gps_w
         draw.text((gps_x, gps_y), gps_line, fill=(120, 120, 120), font=meta_font)
 
+    if style == "plateau":
+        bar_h = max(96, cfg.bottom_margin)
+        y0 = canvas_h - bar_h
+        draw.rectangle((0, y0, canvas_w, canvas_h), fill=(236, 236, 236))
+        logo_text = (make or "CAMERA").upper()
+        draw.text((22, y0 + 28), logo_text, fill=(26, 26, 26), font=info_font)
+        draw.text((max(180, canvas_w // 3), y0 + 16), model or camera, fill=(25, 25, 25), font=info_font)
+        draw.text((max(180, canvas_w // 3), y0 + 52), specs, fill=(30, 30, 30), font=meta_font)
+        focal_txt = f"{focal_length:.0f}mm" if focal_length else "--mm"
+        draw.text((canvas_w - 360, y0 + 20), focal_txt, fill=(22, 22, 22), font=title_font)
+        draw.text((canvas_w - 220, y0 + 20), f"by  {photographer or 'Unknown'}", fill=(20, 20, 20), font=info_font)
+        draw.text((canvas_w - 220, y0 + 58), date_value or "--", fill=(30, 30, 30), font=meta_font)
+
     output_path.parent.mkdir(parents=True, exist_ok=True)
     canvas.save(output_path, quality=95)
 
@@ -343,7 +401,7 @@ class ExifFrameQt(QMainWindow):
         toolbar.addSeparator()
         toolbar.addWidget(QLabel("Style:"))
         self.style_selector = QComboBox()
-        self.style_selector.addItems(["chroma", "simple"])
+        self.style_selector.addItems(["chroma", "simple", "plateau", "float", "explicit"])
         self.style_selector.setCurrentText(self.current_style)
         self.style_selector.currentTextChanged.connect(self.on_style_changed)
         toolbar.addWidget(self.style_selector)
@@ -401,6 +459,7 @@ class ExifFrameQt(QMainWindow):
 
         self.title_edit = QLineEdit("Nature's poetry")
         self.subtitle_edit = QLineEdit("")
+        self.photographer_edit = QLineEdit("")
         self.frame_color_edit = QLineEdit("#F2F2F2")
         color_btn = QPushButton("Pick")
         color_btn.clicked.connect(self.pick_color)
@@ -438,6 +497,7 @@ class ExifFrameQt(QMainWindow):
 
         form.addRow("Title", self.title_edit)
         form.addRow("Subtitle", self.subtitle_edit)
+        form.addRow("Photographer", self.photographer_edit)
         form.addRow("Frame color", color_row)
         form.addRow("Top margin", top_margin_row)
         form.addRow("Bottom margin", bottom_margin_row)
@@ -510,6 +570,7 @@ class ExifFrameQt(QMainWindow):
         for widget in [
             self.title_edit,
             self.subtitle_edit,
+            self.photographer_edit,
             self.frame_color_edit,
             self.top_margin,
             self.bottom_margin,
@@ -696,13 +757,13 @@ class ExifFrameQt(QMainWindow):
         )
 
     def on_style_changed(self, style: str) -> None:
-        self.current_style = style if style in {"chroma", "simple"} else "chroma"
+        self.current_style = style if style in {"chroma", "simple", "plateau", "float", "explicit"} else "chroma"
         is_chroma = self.current_style == "chroma"
         for w in self.chroma_only_widgets:
             w.setVisible(is_chroma)
         if not is_chroma:
             self.manual_swatch_enable.setChecked(False)
-        self.text_align.setVisible(not is_chroma)
+        self.text_align.setVisible(self.current_style == "simple")
         self._update_manual_swatch_ui()
         self.schedule_preview()
 
@@ -876,6 +937,7 @@ class ExifFrameQt(QMainWindow):
             self._manual_color_tuples(src),
             style=self.current_style,
             text_align=self.text_align.currentText(),
+            photographer=self.photographer_edit.text().strip() or None,
         )
         worker.signals.done.connect(self._preview_done)
         worker.signals.error.connect(lambda msg: (self.preview.setText(f"Preview error: {msg}"), self.export_progress.setValue(0)))
@@ -923,6 +985,7 @@ class ExifFrameQt(QMainWindow):
             "manual_colors": self._manual_color_tuples(src),
             "style": self.current_style,
             "text_align": self.text_align.currentText(),
+            "photographer": self.photographer_edit.text().strip(),
         }
         payload = f"{src}|{src.stat().st_mtime_ns}|{asdict(cfg)}|{extra}"
         return hashlib.sha1(payload.encode()).hexdigest()
@@ -977,6 +1040,7 @@ class ExifFrameQt(QMainWindow):
                 forced_colors=self._manual_color_tuples(self.image_paths[0]),
                 style=self.current_style,
                 text_align=self.text_align.currentText(),
+                photographer=self.photographer_edit.text().strip() or None,
             )
             self.export_progress.setValue(100)
             QMessageBox.information(self, "Done", f"Exported:\n{out}")
@@ -1003,6 +1067,7 @@ class ExifFrameQt(QMainWindow):
                     forced_colors=self._manual_color_tuples(src),
                     style=self.current_style,
                     text_align=self.text_align.currentText(),
+                    photographer=self.photographer_edit.text().strip() or None,
                 )
             except Exception as exc:
                 failures.append(f"{src.name}: {exc}")
