@@ -334,13 +334,19 @@ class ExifFrameQt(QMainWindow):
             ("Open Image", self.open_image),
             ("Open Folder", self.open_folder),
             ("Close", self.clear_images),
-            ("Switch Style", self.switch_style),
             ("Apply To All", self.apply_to_all),
             ("Export", self.export_images),
         ]:
             action = QAction(text, self)
             action.triggered.connect(cb)
             toolbar.addAction(action)
+        toolbar.addSeparator()
+        toolbar.addWidget(QLabel("Style:"))
+        self.style_selector = QComboBox()
+        self.style_selector.addItems(["chroma", "simple"])
+        self.style_selector.setCurrentText(self.current_style)
+        self.style_selector.currentTextChanged.connect(self.on_style_changed)
+        toolbar.addWidget(self.style_selector)
 
         root = QWidget()
         self.setCentralWidget(root)
@@ -689,8 +695,8 @@ class ExifFrameQt(QMainWindow):
             "You can also use any EXIF key, e.g. ${DateTimeOriginal}.",
         )
 
-    def switch_style(self) -> None:
-        self.current_style = "simple" if self.current_style == "chroma" else "chroma"
+    def on_style_changed(self, style: str) -> None:
+        self.current_style = style if style in {"chroma", "simple"} else "chroma"
         is_chroma = self.current_style == "chroma"
         for w in self.chroma_only_widgets:
             w.setVisible(is_chroma)
@@ -699,7 +705,6 @@ class ExifFrameQt(QMainWindow):
         self.text_align.setVisible(not is_chroma)
         self._update_manual_swatch_ui()
         self.schedule_preview()
-        QMessageBox.information(self, "Style", f"Switched to '{self.current_style}' style.")
 
     def open_image(self) -> None:
         file_path, _ = QFileDialog.getOpenFileName(self, "Open image", "", "JPEG (*.jpg *.jpeg)")
