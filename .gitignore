@@ -1,0 +1,14 @@
+*.jpg
+*.spec
+
+!__pycache__/
+__pycache__/*
+
+!build/
+build/*
+
+!dist/
+dist/*
+
+!.vscode/
+.vscode/*
