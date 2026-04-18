@@ -162,6 +162,7 @@ def render_with_options(
     source = ef.ImageOps.exif_transpose(source).convert("RGB")
     source.filename = str(input_path)
     width, height = source.size
+    text_color = parse_hex_color((style_options or {}).get("font_color", "#202020"))
 
     if style == "float":
         opts = style_options or {}
@@ -254,7 +255,6 @@ def render_with_options(
     info_font = ef.load_font(cfg.font_path, cfg.info_size)
     meta_font = ef.load_font(cfg.font_path, cfg.meta_size)
     swatch_font = ef.load_font(cfg.font_path, cfg.swatch_label_size)
-    text_color = parse_hex_color((style_options or {}).get("font_color", "#202020"))
 
     exif = ef.get_exif_data(source)
     make = str(ef._decode_if_bytes(ef._first_present(exif, "Make") or "")).strip()
@@ -319,6 +319,7 @@ def render_with_options(
         row_gap = int(opts.get("explicit_row_gap", max(18, int(cfg.meta_size * 1.4))))
         ev_gap = int(opts.get("explicit_entry_value_gap", 120))
         top_y = max(28, cfg.top_margin // 3)
+        top_y = int(opts.get("explicit_top_gap", top_y))
         if cfg.title:
             draw.text((x_mid, top_y), cfg.title, fill=text_color, font=title_font, anchor="ma")
             top_y += cfg.title_size + 8
@@ -610,6 +611,7 @@ class ExifFrameQt(QMainWindow):
         explicit_row_gap_row, self.explicit_row_gap = self._slider_spin(8, 220, 93)
         explicit_entry_gap_row, self.explicit_entry_gap = self._slider_spin(20, 300, 139)
         explicit_bottom_gap_row, self.explicit_bottom_gap = self._slider_spin(10, 500, 234)
+        explicit_top_gap_row, self.explicit_top_gap = self._slider_spin(0, 400, 28)
         self.font_color_edit = QLineEdit("#202020")
         font_color_btn = QPushButton("Pick")
         font_color_btn.clicked.connect(self.pick_font_color)
@@ -660,6 +662,7 @@ class ExifFrameQt(QMainWindow):
         form.addRow("Explicit row gap", explicit_row_gap_row)
         form.addRow("Explicit entry-value gap", explicit_entry_gap_row)
         form.addRow("Explicit bottom gap", explicit_bottom_gap_row)
+        form.addRow("Explicit top title gap", explicit_top_gap_row)
         form.addRow("Font path", self.font_path)
         form.addRow("Export template", self.export_template)
         form.addRow("", help_btn)
@@ -694,7 +697,7 @@ class ExifFrameQt(QMainWindow):
         self.plateau_only_widgets = [plateau_left_row, plateau_logo_row, plateau_mid_row, plateau_exif_gap_row, plateau_focal_gap_row, self.plateau_photographer_bold, self.plateau_model_bold]
         self.float_only_widgets = [float_height_row, float_divider_row]
         self.float_only_widgets += [float_left_pad_row, float_logo_row]
-        self.explicit_only_widgets = [explicit_row_gap_row, explicit_entry_gap_row, explicit_bottom_gap_row]
+        self.explicit_only_widgets = [explicit_row_gap_row, explicit_entry_gap_row, explicit_bottom_gap_row, explicit_top_gap_row]
         self.margin_widgets = [top_margin_row, bottom_margin_row, side_margin_row]
         self.base_common_fields = [
             self.title_edit,
@@ -771,6 +774,7 @@ class ExifFrameQt(QMainWindow):
             self.explicit_row_gap,
             self.explicit_entry_gap,
             self.explicit_bottom_gap,
+            self.explicit_top_gap,
             self.font_path,
             self.dump_exif,
             self.manual_swatch_enable,
@@ -778,6 +782,26 @@ class ExifFrameQt(QMainWindow):
             self._connect_changed(widget)
         self.swatch_count.valueChanged.connect(self._update_manual_swatch_ui)
         self.manual_swatch_enable.stateChanged.connect(self._update_manual_swatch_ui)
+        base_state = self._capture_style_state()
+        chroma_simple_defaults = {
+            **base_state,
+            "top_margin": 170,
+            "bottom_margin": 190,
+            "side_margin": 40,
+            "title_size": 62,
+            "subtitle_size": 42,
+            "info_size": 60,
+            "meta_size": 47,
+            "swatch_count": 5,
+            "swatch_label_size": 15,
+            "title_gap": 15,
+            "camera_gap": 7,
+            "swatch_box_height": 70,
+            "swatch_box_width": 2091,
+        }
+        self.style_states["chroma"] = chroma_simple_defaults.copy()
+        self.style_states["simple"] = chroma_simple_defaults.copy()
+        self.style_states["explicit"] = base_state.copy()
         self.on_style_changed(self.current_style)
 
     def _spin(self, mn: int, mx: int, val: int) -> QSpinBox:
@@ -959,6 +983,7 @@ class ExifFrameQt(QMainWindow):
             "explicit_row_gap": self.explicit_row_gap.value(),
             "explicit_entry_value_gap": self.explicit_entry_gap.value(),
             "explicit_bottom_gap": self.explicit_bottom_gap.value(),
+            "explicit_top_gap": self.explicit_top_gap.value(),
             "font_color": self.font_color_edit.text().strip(),
         }
 
@@ -1013,6 +1038,7 @@ class ExifFrameQt(QMainWindow):
         self.explicit_row_gap.setValue(int(state.get("explicit_row_gap", self.explicit_row_gap.value())))
         self.explicit_entry_gap.setValue(int(state.get("explicit_entry_value_gap", self.explicit_entry_gap.value())))
         self.explicit_bottom_gap.setValue(int(state.get("explicit_bottom_gap", self.explicit_bottom_gap.value())))
+        self.explicit_top_gap.setValue(int(state.get("explicit_top_gap", self.explicit_top_gap.value())))
         self._applying_style_state = False
 
     def template_help(self) -> None:
