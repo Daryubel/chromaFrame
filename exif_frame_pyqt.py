@@ -180,7 +180,14 @@ def render_with_options(
         exp_f = ef._first_present(exif_f, "ExposureTime", "ShutterSpeedValue")
         iso_f = ef._decode_if_bytes(ef._first_present(exif_f, "ISOSpeedRatings", "PhotographicSensitivity", "ISO"))
         specs_f = "    ".join([f"{focal_f:.0f}mm" if focal_f else "--mm", f"f/{fnum_f:.1f}" if fnum_f else "f/--", ef._format_exposure(exp_f), f"ISO{iso_f}" if iso_f else "ISO--"])
-        overlay_h = max(40, int(opts.get("float_display_height", max(80, int(height * 0.14)))))
+        line1 = f"{photographer or 'Unknown'}    {date_f}"
+        line2 = f"{model_f or '--'}    {specs_f}"
+        l1_bbox = draw_f.textbbox((0, 0), line1, font=info_font_f)
+        l2_bbox = draw_f.textbbox((0, 0), line2, font=meta_font_f)
+        l1_h = l1_bbox[3] - l1_bbox[1]
+        l2_h = l2_bbox[3] - l2_bbox[1]
+        needed_h = l1_h + l2_h + 26
+        overlay_h = max(needed_h, int(opts.get("float_display_height", max(80, int(height * 0.14)))))
         left_pad = int(opts.get("plateau_left_padding", 20))
         divider_gap = int(opts.get("float_divider_gap", 24))
         y0 = height - overlay_h
@@ -193,8 +200,10 @@ def render_with_options(
         divider_x = logo_x + (logo_bbox[2] - logo_bbox[0]) + divider_gap
         draw_f.line((divider_x, y0 + overlay_h * 0.25, divider_x, y0 + overlay_h * 0.75), fill=(255, 255, 255), width=2)
         text_x = divider_x + divider_gap
-        draw_f.text((text_x, y0 + int(overlay_h * 0.22)), f"{photographer or 'Unknown'}    {date_f}", fill=(238, 238, 238), font=info_font_f)
-        draw_f.text((text_x, y0 + int(overlay_h * 0.56)), f"{model_f or '--'}    {specs_f}", fill=(220, 220, 220), font=meta_font_f)
+        line1_y = y0 + (overlay_h - (l1_h + l2_h + 10)) // 2
+        line2_y = line1_y + l1_h + 10
+        draw_f.text((text_x, line1_y), line1, fill=(238, 238, 238), font=info_font_f)
+        draw_f.text((text_x, line2_y), line2, fill=(220, 220, 220), font=meta_font_f)
         output_path.parent.mkdir(parents=True, exist_ok=True)
         canvas_float.save(output_path, quality=95)
         return
@@ -308,28 +317,27 @@ def render_with_options(
         y = canvas_h - int(opts.get("explicit_bottom_gap", 64))
         row_gap = int(opts.get("explicit_row_gap", max(18, int(cfg.meta_size * 1.4))))
         ev_gap = int(opts.get("explicit_entry_value_gap", 120))
-        lines = [
-            ("TakenAt", date_value or "--"),
-            ("Location", gps_line or "--"),
-            ("Focal", f"{focal_length:.0f}mm" if focal_length else "--"),
-            ("Aperture", f"f/{f_number:.1f}" if f_number else "--"),
-            ("Shutter", ef._format_exposure(exposure)),
-            ("ISO", str(iso) if iso else "--"),
-            ("PhotoBy", photographer or "--"),
-            ("ShotOn", model or make or "--"),
-            ("Logo", (make or "CAMERA").upper()),
+        sections = [
+            [("TakenAt", date_value or "--"), ("Location", gps_line or "--")],
+            [("Focal", f"{focal_length:.0f}mm" if focal_length else "--"), ("Aperture", f"f/{f_number:.1f}" if f_number else "--"), ("Shutter", ef._format_exposure(exposure)), ("ISO", str(iso) if iso else "--")],
+            [("PhotoBy", photographer or "--")],
+            [("ShotOn", model or make or "--")],
+            [("Logo", (make or "CAMERA").upper())],
         ]
-        for k, v in reversed(lines):
-            key_bbox = draw.textbbox((0, 0), k, font=meta_font)
-            val_font = info_font if k in {"PhotoBy", "ShotOn"} else meta_font
-            val_bbox = draw.textbbox((0, 0), v, font=val_font)
-            kw = key_bbox[2] - key_bbox[0]
-            vw = val_bbox[2] - val_bbox[0]
-            total_w = kw + ev_gap + vw
-            x0 = x_mid - total_w // 2
-            draw.text((x0, y), k, fill=(145, 145, 145), font=meta_font)
-            draw.text((x0 + kw + ev_gap, y), v, fill=(35, 35, 35), font=val_font)
-            y -= row_gap
+        for si, section in enumerate(reversed(sections)):
+            for k, v in reversed(section):
+                key_bbox = draw.textbbox((0, 0), k, font=meta_font)
+                val_font = info_font if k in {"PhotoBy", "ShotOn", "Logo"} else meta_font
+                kw = key_bbox[2] - key_bbox[0]
+                x_key = x_mid - (ev_gap // 2)
+                x_val = x_mid + (ev_gap // 2)
+                draw.text((x_key, y), k, fill=(145, 145, 145), font=meta_font, anchor="ra")
+                draw.text((x_val, y), v, fill=(35, 35, 35), font=val_font, anchor="la")
+                y -= row_gap
+            if si < len(sections) - 1:
+                sep_y = y + row_gap // 2
+                draw.line((canvas_w - panel_w + 26, sep_y, canvas_w - 26, sep_y), fill=(205, 205, 205), width=2)
+                y -= row_gap
         output_path.parent.mkdir(parents=True, exist_ok=True)
         canvas.save(output_path, quality=95)
         return
@@ -549,6 +557,7 @@ class ExifFrameQt(QMainWindow):
         settings_body = QWidget()
         settings_layout = QVBoxLayout(settings_body)
         form = QFormLayout()
+        self.form = form
 
         self.title_edit = QLineEdit("Nature's poetry")
         self.subtitle_edit = QLineEdit("")
@@ -581,9 +590,9 @@ class ExifFrameQt(QMainWindow):
         self.text_align.setVisible(False)
         plateau_left_row, self.plateau_left_padding = self._slider_spin(0, 500, 24)
         plateau_logo_row, self.plateau_logo_size = self._slider_spin(8, 200, 42)
-        plateau_mid_row, self.plateau_mid_x = self._slider_spin(0, 8000, 1200)
+        plateau_mid_row, self.plateau_mid_x = self._slider_spin(0, 8000, 2972)
         plateau_exif_gap_row, self.plateau_model_exif_gap = self._slider_spin(0, 120, 10)
-        plateau_focal_gap_row, self.plateau_model_focal_gap = self._slider_spin(0, 400, 30)
+        plateau_focal_gap_row, self.plateau_model_focal_gap = self._slider_spin(0, 400, 126)
         self.plateau_photographer_bold = QCheckBox("Bold photographer")
         self.plateau_model_bold = QCheckBox("Bold camera model")
         float_height_row, self.float_display_height = self._slider_spin(40, 1200, 120)
@@ -665,6 +674,22 @@ class ExifFrameQt(QMainWindow):
         self.float_only_widgets = [float_height_row, float_divider_row]
         self.explicit_only_widgets = [explicit_row_gap_row, explicit_entry_gap_row, explicit_bottom_gap_row]
         self.margin_widgets = [top_margin_row, bottom_margin_row, side_margin_row]
+        self.base_common_fields = [
+            self.title_edit,
+            self.subtitle_edit,
+            self.photographer_edit,
+            color_row,
+            title_size_row,
+            subtitle_size_row,
+            info_size_row,
+            meta_size_row,
+            title_gap_row,
+            camera_gap_row,
+            self.font_path,
+            self.export_template,
+            help_btn,
+            self.dump_exif,
+        ]
 
         settings_layout.addLayout(form)
         settings_body.setLayout(settings_layout)
@@ -960,27 +985,42 @@ class ExifFrameQt(QMainWindow):
             "You can also use any EXIF key, e.g. ${DateTimeOriginal}.",
         )
 
+    def _set_field_visible(self, field: QWidget, visible: bool) -> None:
+        lbl = self.form.labelForField(field)
+        if lbl is not None:
+            lbl.setVisible(visible)
+        field.setVisible(visible)
+
     def on_style_changed(self, style: str) -> None:
         if hasattr(self, "current_style") and self.current_style:
             self.style_states[self.current_style] = self._capture_style_state()
         self.current_style = style if style in {"chroma", "simple", "plateau", "float", "explicit"} else "chroma"
         if self.current_style in self.style_states:
             self._apply_style_state(self.style_states[self.current_style])
-        is_chroma = self.current_style == "chroma"
-        for w in self.chroma_only_widgets:
-            w.setVisible(is_chroma)
-        if not is_chroma:
+        for f in self.base_common_fields:
+            self._set_field_visible(f, True)
+        for w in self.margin_widgets + self.chroma_only_widgets + self.simple_only_widgets + self.plateau_only_widgets + self.float_only_widgets + self.explicit_only_widgets:
+            self._set_field_visible(w, False)
+
+        if self.current_style == "chroma":
+            for w in self.margin_widgets + self.chroma_only_widgets:
+                self._set_field_visible(w, True)
+        elif self.current_style == "simple":
+            for w in self.margin_widgets + self.simple_only_widgets:
+                self._set_field_visible(w, True)
             self.manual_swatch_enable.setChecked(False)
-        for w in self.simple_only_widgets:
-            w.setVisible(self.current_style == "simple")
-        for w in self.plateau_only_widgets:
-            w.setVisible(self.current_style == "plateau")
-        for w in self.float_only_widgets:
-            w.setVisible(self.current_style == "float")
-        for w in self.explicit_only_widgets:
-            w.setVisible(self.current_style == "explicit")
-        for w in self.margin_widgets:
-            w.setVisible(self.current_style != "float")
+        elif self.current_style == "plateau":
+            for w in self.margin_widgets + self.plateau_only_widgets:
+                self._set_field_visible(w, True)
+            self.manual_swatch_enable.setChecked(False)
+        elif self.current_style == "float":
+            for w in self.float_only_widgets:
+                self._set_field_visible(w, True)
+            self.manual_swatch_enable.setChecked(False)
+        elif self.current_style == "explicit":
+            for w in self.margin_widgets + self.explicit_only_widgets:
+                self._set_field_visible(w, True)
+            self.manual_swatch_enable.setChecked(False)
         self._update_manual_swatch_ui()
         self.schedule_preview()
 
